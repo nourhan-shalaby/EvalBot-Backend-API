@@ -1,0 +1,31 @@
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.ipynb_checkpoints
+.pytest_cache/
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.DS_Store
+
+# Environment variables
+.env
+.flaskenv
+
+# Audio files generated locally
+static/audio/*.wav
+static/audio/*.mp3
+static/audio/*.ogg
+/tmp/
