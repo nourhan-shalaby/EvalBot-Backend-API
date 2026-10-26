@@ -29,18 +29,18 @@ export function PublicHeader() {
   const { profile } = useAuth();
   const { t } = useI18n();
   return (
-    <header className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-5 sm:px-6">
+    <header className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-5 sm:gap-4 sm:px-6">
       <Link to="/" aria-label="EvalBot home"><Logo /></Link>
       <nav className="flex items-center gap-1 sm:gap-2">
         <Link to="/jobs" className="hidden rounded-xl px-3 py-2 text-sm font-medium text-ink hover:bg-sunken sm:inline-block">{t("browse_jobs")}</Link>
         <LangSwitch />
-        <ThemeSwitch />
+        <span className="hidden sm:inline-flex"><ThemeSwitch /></span>
         {profile ? (
           <Link to="/app" className="rounded-xl bg-nile px-4 py-2 text-sm font-medium text-white dark:text-paper">{t("nav_dashboard")}</Link>
         ) : (
           <>
-            <Link to="/login" className="hidden rounded-xl px-3 py-2 text-sm font-medium text-ink hover:bg-sunken sm:inline-block">{t("sign_in")}</Link>
-            <Link to="/signup" className="rounded-xl bg-nile px-4 py-2 text-sm font-medium text-white dark:text-paper">{t("get_started")}</Link>
+            <Link to="/login" className="whitespace-nowrap rounded-xl border border-line bg-surface px-2.5 py-2 text-sm font-medium text-ink hover:border-nile hover:text-nile sm:px-3.5">{t("sign_in")}</Link>
+            <Link to="/signup" className="whitespace-nowrap rounded-xl bg-nile px-2.5 py-2 text-sm font-medium text-white hover:bg-nile-deep sm:px-3.5 dark:text-paper">{t("sign_up")}</Link>
           </>
         )}
       </nav>
