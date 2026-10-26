@@ -15,9 +15,9 @@ google-genai
 librosa
 soundfile
 pydub
-scikit-learn
+scikit-learn==1.7.2
 pandas
-joblib
+joblib==1.5.3
 reportlab
 matplotlib
 fastapi

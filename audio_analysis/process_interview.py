@@ -445,18 +445,30 @@ def train_role_classifier(csv_path: str = TRAINING_CSV) -> Pipeline:
     return model
 
 
+BUNDLED_ROLE_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "models", "role_classifier.joblib")
+
+
 def get_role_classifier() -> Pipeline:
+    """Load the pre-trained role classifier.
+
+    The model ships with the app (assets/models). The training transcripts come from the
+    MIT Interview Dataset, whose license does not allow redistribution, so they are not
+    included; retraining only happens if EVALBOT_TRAINING_CSV points to a local copy.
+    """
     with _init_lock:
         if "role_clf" not in _services:
-            path = os.path.join(MODEL_DIR, "role_classifier.joblib")
             model = None
-            if os.path.exists(path):
-                try:
-                    model = joblib.load(path)
-                except Exception as e:
-                    logger.warning("Could not load cached role classifier (%s); retraining", e)
+            for path in (os.path.join(MODEL_DIR, "role_classifier.joblib"), BUNDLED_ROLE_MODEL):
+                if os.path.exists(path):
+                    try:
+                        model = joblib.load(path)
+                        break
+                    except Exception as e:
+                        logger.warning("Could not load role classifier from %s (%s)", path, e)
             _services["role_clf"] = model
     if _services["role_clf"] is None:
+        if not os.path.exists(TRAINING_CSV):
+            raise RuntimeError("Role classifier model not found and no training data available")
         _services["role_clf"] = train_role_classifier()
     return _services["role_clf"]
 
