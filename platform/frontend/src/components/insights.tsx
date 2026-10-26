@@ -80,7 +80,7 @@ export function CameraPanel({ cam, nonverbal, self, dir }: { cam: CameraInfo; no
                     <XAxis dataKey="label" stroke="var(--color-muted)" fontSize={10} interval="preserveStartEnd" />
                     <YAxis stroke="var(--color-muted)" fontSize={11} tickFormatter={(v) => `${Math.round(v * 100)}%`} />
                     <Tooltip contentStyle={tip} formatter={(v: number, k: string) => [`${Math.round(v * 100)}%`, t(`emo_${k}` as "emo_happy")]} />
-                    {EMO_ORDER.map((e) => <Area key={e} type="monotone" dataKey={e} stackId="1" stroke={EMO_COLOR[e]} fill={EMO_COLOR[e]} fillOpacity={0.75} />)}
+                    {EMO_ORDER.map((e) => <Area key={e} type="monotone" dataKey={e} stackId="1" stroke={EMO_COLOR[e]} fill={EMO_COLOR[e]} fillOpacity={0.75} isAnimationActive={false} />)}
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -181,7 +181,9 @@ export function SkillsPanel({ r, dir }: { r: Report; dir: string }) {
 
 export function CvView({ cv, match, compact = false }: { cv: CvProfile; match?: SkillMatch | null; compact?: boolean }) {
   const { t } = useI18n();
-  const matched = new Set((match?.matched ?? []).map((x) => x.toLowerCase()));
+  const norm = (x: string) => x.toLowerCase().replace(/^apache\s+/, "").replace(/[^a-z0-9+#]/g, "");
+  const want = (match?.matched ?? []).map(norm).filter(Boolean);
+  const isMatch = (skill: string) => { const k = norm(skill); return want.some((w) => w === k || (w.length > 2 && k.length > 2 && (k.includes(w) || w.includes(k)))); };
   return (
     <div className="space-y-5">
       <div>
@@ -201,7 +203,7 @@ export function CvView({ cv, match, compact = false }: { cv: CvProfile; match?: 
           <p className="mb-2 text-sm font-medium text-muted">{t("cv_skills")}</p>
           <ul className="flex flex-wrap gap-1.5" dir="ltr">
             {cv.skills.map((s) => (
-              <li key={s} className={`rounded-lg border px-2 py-0.5 text-sm ${matched.has(s.toLowerCase()) ? "border-nile bg-nile-soft text-nile-deep" : "border-line text-ink"}`}>{s}</li>
+              <li key={s} className={`rounded-lg border px-2 py-0.5 text-sm ${isMatch(s) ? "border-nile bg-nile-soft text-nile-deep" : "border-line text-ink"}`}>{s}</li>
             ))}
           </ul>
         </div>
