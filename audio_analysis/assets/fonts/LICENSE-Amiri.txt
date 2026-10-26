@@ -1,0 +1,4 @@
+Amiri font (Amiri-Regular.ttf, Amiri-Bold.ttf)
+Copyright (c) 2010-2022 Khaled Hosny <khaledhosny@eglug.org>
+Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+Used to render Arabic text in EvalBot PDF reports.

@@ -2,7 +2,9 @@
 
 **EvalBot** is an AI-powered interview evaluation system: it runs spoken interviews, analyzes the candidate's recorded answers, and produces a detailed feedback report. It serves recruiters (faster, more consistent screening) and job seekers (a virtual interview coach).
 
-This repository holds the **Flask backend API** that orchestrates the interview flow and connects the system's services: the mobile app, question generation, text-to-speech, speech-to-text, and answer evaluation.
+This repository holds:
+- the **Flask backend API** (root folder) that orchestrates the interview flow and connects the system's services: the mobile app, question generation, text-to-speech, speech-to-text, and answer evaluation
+- the **audio analysis service** ([`audio_analysis/`](audio_analysis/)) that analyzes a recorded interview and produces the PDF report
 
 > Bachelor's graduation project, Scientific Computing Department, Faculty of Computers and Artificial Intelligence, Benha University (June 2025). Supervised by Dr. Eman Monir.
 
@@ -24,19 +26,26 @@ flowchart LR
     AUD -->|PDF + JSON report| APP
 ```
 
-### Audio analysis service
+### Audio analysis service ([`audio_analysis/`](audio_analysis/))
 
-A separate FastAPI service (deployed with Docker on Hugging Face Spaces) turns a full interview recording into a candidate report:
+A FastAPI service, deployed with Docker on Hugging Face Spaces, that turns a full interview recording into a candidate report, with a web page in English and Arabic:
 
-1. Audio conversion to 16 kHz mono WAV
-2. Speech-to-text with speaker labels (AssemblyAI)
+- **Analyze an interview:** upload a recording (or try the built-in sample) and get a suitability score, per-question scores and feedback with a stronger example answer, voice metrics, and a transcript synced to the audio, plus a PDF report (English, or right-to-left Arabic) and JSON
+- **Practice mode:** pick a question or generate questions for any job title, record an answer with the microphone, and get instant feedback
+
+The pipeline:
+
+1. Audio conversion to 16 kHz mono WAV (ffmpeg)
+2. Speech-to-text with speaker diarization (AssemblyAI)
 3. Prosodic features per utterance: pitch and intensity (librosa)
-4. Speaker identification: NVIDIA NeMo TitaNet embeddings stored and matched in a Pinecone vector index
-5. Role classification (interviewer vs. interviewee): Random Forest on prosodic + TF-IDF features
-6. Voice analysis: speaking rate, filler-word ratio, repetition, and composite confidence / anxiety / hesitation scores
-7. Report generation: Gemini writes the evaluation (summary, competencies, strengths, weaknesses, recommendations), rendered as a multi-page PDF with charts (ReportLab, Matplotlib) plus a JSON output
+4. Speaker identification: NVIDIA NeMo TitaNet embeddings matched by cosine similarity against a vector index (Pinecone, or a built-in NumPy index)
+5. Role classification (interviewer vs. interviewee): Random Forest trained on ~3,000 labeled utterances from the MIT Interview dataset (~92% held-out accuracy), aggregated per speaker
+6. Voice analysis: speaking rate, filler words, repetition, pitch, jitter/shimmer, and confidence / anxiety / hesitation scores
+7. Question pairing: groups the transcript into question/answer pairs
+8. Evaluation: Gemini returns a structured assessment in English or Arabic (per-question score and feedback, strengths with evidence, development areas, role fit, recommendations, content score)
+9. Report: multi-page PDF with charts, per-question feedback and an annotated transcript (ReportLab, Matplotlib; Arabic shaping with arabic-reshaper and python-bidi), plus JSON
 
-Space: [huggingface.co/spaces/EvalBot/Audio-EvalBot](https://huggingface.co/spaces/EvalBot/Audio-EvalBot). It's on the free tier, so it may be sleeping and take a minute to wake up.
+**Live demo:** [huggingface.co/spaces/EvalBot/Audio-EvalBot](https://huggingface.co/spaces/EvalBot/Audio-EvalBot). It's on free hardware, so the first request after it has been idle takes a minute to wake it up.
 
 ---
 
