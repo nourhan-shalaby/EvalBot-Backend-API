@@ -1,3 +1,12 @@
+# ---- 1. build the web app -------------------------------------------------------------
+FROM node:22-slim AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# ---- 2. Python service ------------------------------------------------------------------
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,6 +33,7 @@ RUN pip install --user --upgrade pip \
     && pip install --user -r requirements.txt
 
 COPY --chown=appuser:appuser . .
+COPY --from=web --chown=appuser:appuser /web/dist ./frontend/dist
 
 # Train the role classifier and download the speaker model at build time,
 # so the Space is ready as soon as it starts

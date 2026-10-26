@@ -27,6 +27,8 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 import process_interview as pipeline
+from platform_app import core as platform_core
+from platform_app import routes as platform_routes
 
 logger = logging.getLogger("evalbot.app")
 
@@ -41,7 +43,8 @@ BASE_URL = os.getenv("BASE_URL", "https://evalbot-audio-evalbot.hf.space").rstri
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 ALLOWED_EXT = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".mp4", ".aac", ".opus"}
 
-app = FastAPI(title="EvalBot Audio Analysis", version="2.0")
+app = FastAPI(title="EvalBot", version="3.0")
+app.include_router(platform_routes.router)
 _jobs: Dict[str, Dict] = {}
 _job_lock = threading.Lock()
 _pipeline_lock = threading.Semaphore(int(os.getenv("MAX_CONCURRENT_JOBS", "1")))
@@ -50,6 +53,12 @@ _pipeline_lock = threading.Semaphore(int(os.getenv("MAX_CONCURRENT_JOBS", "1")))
 @app.on_event("startup")
 def warm_up():
     threading.Thread(target=pipeline.load_models, daemon=True).start()
+    try:
+        platform_core.init_db()
+        if platform_core.enabled():
+            platform_core.ensure_bucket()
+    except Exception:
+        logger.exception("Platform initialisation failed")
 
 
 SAMPLE_AUDIO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sample_interview.mp3")
@@ -247,7 +256,24 @@ def get_output(kind: str, filename: str):
                         filename=safe)
 
 
-@app.get("/", response_class=HTMLResponse)
-def index():
+@app.get("/demo", response_class=HTMLResponse)
+def demo():
     with open(os.path.join(os.path.dirname(__file__), "static_ui.html"), encoding="utf-8") as f:
         return f.read()
+
+
+# ---- Single-page web app (built from ./frontend into ./frontend/dist) ----------------------
+DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa(full_path: str):
+    if full_path.startswith(("api/", "static/", "jobs/", "practice/")):
+        raise HTTPException(404)
+    candidate = os.path.normpath(os.path.join(DIST, full_path))
+    if full_path and candidate.startswith(DIST) and os.path.isfile(candidate):
+        return FileResponse(candidate)
+    index_html = os.path.join(DIST, "index.html")
+    if os.path.isfile(index_html):
+        return FileResponse(index_html, headers={"Cache-Control": "no-cache"})
+    return demo()

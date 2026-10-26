@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-static/outputs/
-processed_audio/
-temp_files/
-models/
-.env
-interview_transcripts_by_turkers.csv
-*.avi
