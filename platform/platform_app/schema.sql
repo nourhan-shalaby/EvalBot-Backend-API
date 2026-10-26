@@ -86,3 +86,27 @@ create table if not exists reviews (
     notes         text,
     updated_at    timestamptz not null default now()
 );
+
+-- v2: job board, richer job posts and company profiles (idempotent migrations)
+alter table companies add column if not exists industry text;
+alter table companies add column if not exists size text;
+alter table companies add column if not exists location text;
+
+alter table jobs add column if not exists location text;
+alter table jobs add column if not exists work_mode text not null default 'onsite';         -- onsite | remote | hybrid
+alter table jobs add column if not exists employment_type text not null default 'full_time'; -- full_time | part_time | internship | contract
+alter table jobs add column if not exists salary text;
+alter table jobs add column if not exists skills jsonb not null default '[]'::jsonb;
+alter table jobs add column if not exists deadline date;
+alter table jobs add column if not exists visibility text not null default 'public';        -- public (job board) | link (only via link)
+alter table jobs add column if not exists views int not null default 0;
+create index if not exists jobs_board_idx on jobs(status, visibility, created_at desc);
+
+-- Lock tables against Supabase's public Data API: the app server connects as the database owner
+-- (which bypasses RLS), while the anon/authenticated API roles get no rows at all (no policies).
+alter table companies enable row level security;
+alter table profiles  enable row level security;
+alter table jobs      enable row level security;
+alter table sessions  enable row level security;
+alter table answers   enable row level security;
+alter table reviews   enable row level security;

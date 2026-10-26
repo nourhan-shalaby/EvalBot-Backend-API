@@ -5,6 +5,9 @@ import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+import csv
+import io
+from datetime import date, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -41,14 +44,38 @@ def catalog():
     return ai.catalog()
 
 
+JOB_PUBLIC_COLS = ("j.id, j.title, j.track, j.level, j.location, j.work_mode, j.employment_type, j.salary, j.skills, "
+                   "j.deadline, j.share_token, j.created_at, j.answer_seconds, jsonb_array_length(j.questions) as question_count, "
+                   "c.name as company, c.website, c.industry, c.size as company_size, c.about as company_about, "
+                   "c.location as company_location")
+ACCEPTING = "(j.status = 'open' and (j.deadline is null or j.deadline >= current_date))"
+
+
 @router.get("/public/jobs/{token}")
 def public_job(token: str):
-    j = q1("select j.id, j.title, j.track, j.level, j.description, j.answer_seconds, j.status, "
-           "jsonb_array_length(j.questions) as question_count, c.name as company, c.website "
-           "from jobs j join companies c on c.id = j.company_id where j.share_token = %s", [token])
+    j = q1(f"update jobs j set views = views + 1 from companies c where c.id = j.company_id and j.share_token = %s "
+           f"returning {JOB_PUBLIC_COLS}, j.description, j.status, {ACCEPTING} as accepting", [token])
     if not j:
         raise HTTPException(404, "This job link is not valid")
     return j
+
+
+@router.get("/board")
+def job_board(search: str = "", track: str = "", level: str = "", work_mode: str = "", employment_type: str = ""):
+    """Open public jobs from all companies (no sign-in needed)."""
+    where, params = [ACCEPTING, "j.visibility = 'public'"], {}
+    if search.strip():
+        where.append("(j.title ilike %(s)s or j.description ilike %(s)s or c.name ilike %(s)s or j.skills::text ilike %(s)s "
+                     "or j.location ilike %(s)s)")
+        params["s"] = f"%{search.strip()[:80]}%"
+    for col, val in (("track", track), ("level", level), ("work_mode", work_mode), ("employment_type", employment_type)):
+        if val:
+            where.append(f"j.{col} = %({col})s")
+            params[col] = val
+    return q(f"select {JOB_PUBLIC_COLS}, left(j.description, 260) as snippet, "
+             f"(select count(*) from sessions s where s.job_id = j.id) as applicants "
+             f"from jobs j join companies c on c.id = j.company_id where {' and '.join(where)} "
+             f"order by j.created_at desc limit 200", params)
 
 
 # --------------------------------------------------------------------------------------
@@ -71,8 +98,9 @@ def me(user: Dict = Depends(current_user)):
 @router.patch("/me")
 def update_me(body: ProfileIn, user: Dict = Depends(current_user)):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
-    if "role" in fields and fields["role"] not in ("candidate", "recruiter"):
-        raise HTTPException(400, "Invalid role")
+    if "role" in fields and fields["role"] != user["role"]:
+        if fields["role"] != "candidate" or user.get("company_id"):
+            raise HTTPException(400, "Company accounts are created from the company setup page")
     if fields:
         sets = ", ".join(f"{k} = %({k})s" for k in fields)
         q(f"update profiles set {sets} where id = %(id)s", {**fields, "id": user["id"]})
@@ -81,18 +109,25 @@ def update_me(body: ProfileIn, user: Dict = Depends(current_user)):
 
 class CompanyIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
-    website: Optional[str] = None
-    about: Optional[str] = None
+    website: Optional[str] = Field(None, max_length=200)
+    about: Optional[str] = Field(None, max_length=2000)
+    industry: Optional[str] = Field(None, max_length=80)
+    size: Optional[str] = Field(None, max_length=20)
+    location: Optional[str] = Field(None, max_length=120)
 
 
 @router.post("/companies")
 def create_company(body: CompanyIn, user: Dict = Depends(current_user)):
-    if user.get("company_id"):
-        c = q1("update companies set name=%s, website=%s, about=%s where id=%s returning *",
-               [body.name, body.website, body.about, user["company_id"]])
+    if user.get("company_id"):  # fields that are not sent keep their current value
+        c = q1("update companies set name=%s, website=coalesce(%s, website), about=coalesce(%s, about), "
+               "industry=coalesce(%s, industry), size=coalesce(%s, size), location=coalesce(%s, location) where id=%s returning *",
+               [body.name, body.website, body.about, body.industry, body.size, body.location, user["company_id"]])
     else:
-        c = q1("insert into companies (name, website, about, created_by) values (%s, %s, %s, %s) returning *",
-               [body.name, body.website, body.about, user["id"]])
+        if user["role"] == "candidate" and q1("select 1 from sessions where user_id=%s limit 1", [user["id"]]):
+            raise HTTPException(400, "This account is already used for interviews. Create a separate account for your company.")
+        c = q1("insert into companies (name, website, about, industry, size, location, created_by) "
+               "values (%s, %s, %s, %s, %s, %s, %s) returning *",
+               [body.name, body.website, body.about, body.industry, body.size, body.location, user["id"]])
         q("update profiles set role='recruiter', company_id=%s where id=%s", [c["id"], user["id"]])
     return c
 
@@ -159,12 +194,16 @@ class ApplyIn(BaseModel):
 
 @router.post("/jobs/apply/{token}")
 def apply_job(token: str, body: ApplyIn, user: Dict = Depends(current_user)):
-    j = q1("select * from jobs where share_token = %s", [token])
-    if not j or j["status"] != "open":
+    if user["role"] == "recruiter":
+        raise HTTPException(403, "Company accounts can't apply to jobs. Use a personal account to apply.")
+    j = q1(f"select j.*, {ACCEPTING} as accepting from jobs j where j.share_token = %s", [token])
+    if not j:
         raise HTTPException(404, "This job is not accepting interviews")
     existing = q1("select * from sessions where job_id=%s and user_id=%s order by created_at desc limit 1", [j["id"], user["id"]])
     if existing:
         return existing
+    if not j["accepting"]:
+        raise HTTPException(400, "This job is not accepting interviews")
     plan = [{"text": x["text"], "kind": x.get("kind", "custom"), "skill": x.get("skill", ""),
              "rubric": x.get("rubric", "")} for x in j["questions"]]
     ctx = {"plan": plan, "role": j["title"], "answer_seconds": j["answer_seconds"], "followups": 0,
@@ -182,6 +221,16 @@ def list_sessions(user: Dict = Depends(current_user)):
              "jsonb_array_length(s.context->'plan') as planned "
              "from sessions s left join jobs j on j.id = s.job_id where s.user_id = %s order by s.created_at desc limit 100",
              [user["id"]])
+
+
+@router.get("/applications")
+def my_applications(user: Dict = Depends(current_user)):
+    return q("select s.id, s.status, s.overall_score, s.created_at, s.completed_at, j.title, j.share_token, j.location, "
+             "j.work_mode, j.employment_type, c.name as company, coalesce(r.status, 'new') as review_status, "
+             "(select count(*) from answers a where a.session_id = s.id) as answered, "
+             "jsonb_array_length(s.context->'plan') as planned "
+             "from sessions s join jobs j on j.id = s.job_id join companies c on c.id = j.company_id "
+             "left join reviews r on r.session_id = s.id where s.user_id = %s order by s.created_at desc", [user["id"]])
 
 
 @router.get("/sessions/{sid}")
@@ -428,6 +477,27 @@ class JobIn(BaseModel):
     questions: List[Dict] = Field(min_length=1, max_length=15)
     answer_seconds: int = Field(120, ge=30, le=600)
     status: str = "open"
+    location: Optional[str] = Field(None, max_length=120)
+    work_mode: str = "onsite"
+    employment_type: str = "full_time"
+    salary: Optional[str] = Field(None, max_length=80)
+    skills: List[str] = Field(default_factory=list, max_length=20)
+    deadline: Optional[date] = None
+    visibility: str = "public"
+
+    def clean(self) -> Dict:
+        d = self.model_dump()
+        d["status"] = d["status"] if d["status"] in ("draft", "open", "closed") else "open"
+        d["work_mode"] = d["work_mode"] if d["work_mode"] in ("onsite", "remote", "hybrid") else "onsite"
+        d["employment_type"] = d["employment_type"] if d["employment_type"] in ("full_time", "part_time", "internship", "contract") else "full_time"
+        d["visibility"] = "link" if d["visibility"] == "link" else "public"
+        d["skills"] = [x.strip()[:40] for x in d["skills"] if x and x.strip()][:20]
+        d["questions"] = _clean_questions(d["questions"])
+        return d
+
+
+JOB_FIELDS = ["title", "track", "level", "description", "questions", "answer_seconds", "status", "location", "work_mode",
+              "employment_type", "salary", "skills", "deadline", "visibility"]
 
 
 def _clean_questions(qs: List[Dict]) -> List[Dict]:
@@ -444,10 +514,11 @@ def list_jobs(user: Dict = Depends(recruiter)):
 
 @router.post("/jobs")
 def create_job(body: JobIn, user: Dict = Depends(recruiter)):
-    return q1("insert into jobs (company_id, created_by, title, track, level, description, questions, answer_seconds, status) "
-              "values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning *",
-              [user["company_id"], user["id"], body.title, body.track, body.level, body.description,
-               _clean_questions(body.questions), body.answer_seconds, body.status if body.status in ("draft", "open", "closed") else "open"])
+    d = body.clean()
+    cols = ", ".join(JOB_FIELDS)
+    vals = ", ".join(f"%({k})s" for k in JOB_FIELDS)
+    return q1(f"insert into jobs (company_id, created_by, {cols}) values (%(company_id)s, %(created_by)s, {vals}) returning *",
+              {**d, "company_id": user["company_id"], "created_by": user["id"]})
 
 
 def _job(jid: str, user: Dict) -> Dict:
@@ -465,9 +536,9 @@ def get_job(jid: str, user: Dict = Depends(recruiter)):
 @router.put("/jobs/{jid}")
 def update_job(jid: str, body: JobIn, user: Dict = Depends(recruiter)):
     _job(jid, user)
-    return q1("update jobs set title=%s, track=%s, level=%s, description=%s, questions=%s, answer_seconds=%s, status=%s "
-              "where id=%s returning *", [body.title, body.track, body.level, body.description, _clean_questions(body.questions),
-                                         body.answer_seconds, body.status, jid])
+    d = body.clean()
+    sets = ", ".join(f"{k} = %({k})s" for k in JOB_FIELDS)
+    return q1(f"update jobs set {sets} where id = %(jid)s returning *", {**d, "jid": jid})
 
 
 @router.get("/jobs/{jid}/candidates")
@@ -498,3 +569,125 @@ def review(sid: str, body: ReviewIn, user: Dict = Depends(recruiter)):
               "on conflict (session_id) do update set status=excluded.status, rating=excluded.rating, notes=excluded.notes, "
               "reviewer_id=excluded.reviewer_id, updated_at=now() returning *",
               [sid, user["id"], body.status, body.rating, body.notes])
+
+
+# --------------------------------------------------------------------------------------
+# Recruiters: analytics
+# --------------------------------------------------------------------------------------
+def _f(v, nd=1):
+    return None if v is None else round(float(v), nd)
+
+
+def _analytics(company_id: str, job_id: Optional[str], lang: str) -> Dict:
+    """Hiring analytics for a whole company, or for one job when job_id is given."""
+    F = "j.company_id = %(c)s" + (" and j.id = %(j)s" if job_id else "")
+    p = {"c": company_id, "j": job_id}
+    jobs = q1(f"select count(*) as jobs, count(*) filter (where {ACCEPTING}) as open_jobs, coalesce(sum(views), 0) as views "
+              f"from jobs j where {F}", p)
+    t = q1(f"select count(*) as applicants, count(distinct s.user_id) as people, "
+           f"count(*) filter (where s.status = 'completed') as completed, "
+           f"count(*) filter (where s.status in ('in_progress', 'processing')) as in_progress, "
+           f"avg(s.overall_score) filter (where s.status = 'completed') as avg_score, "
+           f"percentile_cont(0.5) within group (order by s.overall_score) filter (where s.status = 'completed') as median_score, "
+           f"max(s.overall_score) as best_score, "
+           f"count(*) filter (where r.status in ('shortlisted', 'hired')) as shortlisted, "
+           f"count(*) filter (where r.status = 'hired') as hired, count(*) filter (where r.status = 'rejected') as rejected, "
+           f"count(*) filter (where s.status = 'completed' and coalesce(r.status, 'new') = 'new') as to_review, "
+           f"percentile_cont(0.5) within group (order by extract(epoch from (s.completed_at - s.created_at)) / 60) "
+           f"filter (where s.status = 'completed' and s.completed_at - s.created_at between interval '0' and interval '1 day') as avg_minutes "
+           f"from sessions s join jobs j on j.id = s.job_id left join reviews r on r.session_id = s.id where {F}", p)
+
+    # applications per day, last 30 days
+    since = date.today() - timedelta(days=29)
+    days = {r["d"]: r for r in q(f"select s.created_at::date as d, count(*) as n, count(*) filter (where s.status = 'completed') as c "
+                                 f"from sessions s join jobs j on j.id = s.job_id where {F} and s.created_at >= %(since)s "
+                                 f"group by 1", {**p, "since": since})}
+    timeline = [{"date": (since + timedelta(days=i)).isoformat(),
+                 "applicants": days.get(since + timedelta(days=i), {}).get("n", 0),
+                 "completed": days.get(since + timedelta(days=i), {}).get("c", 0)} for i in range(30)]
+
+    done = q(f"select s.overall_score as score, s.report->'summary'->>'hiring_signal' as signal, "
+             f"s.report->'calibrated'->'traits' as traits from sessions s join jobs j on j.id = s.job_id "
+             f"where {F} and s.status = 'completed'", p)
+    buckets = [{"range": f"{b}-{b + 9 if b < 90 else 100}", "count": 0} for b in range(0, 100, 10)]
+    signals = {"strong_yes": 0, "yes": 0, "maybe": 0, "no": 0}
+    trait_sum: Dict[str, List[float]] = {}
+    for d in done:
+        if d["score"] is not None:
+            buckets[min(int(d["score"] // 10), 9)]["count"] += 1
+        if d["signal"] in signals:
+            signals[d["signal"]] += 1
+        for tr in d["traits"] or []:
+            trait_sum.setdefault(tr["trait"], []).append(tr["percentile"])
+    labels = cal.TRAIT_LABELS.get(lang, cal.TRAIT_LABELS["en"])
+    traits = sorted([{"trait": k, "label": labels.get(k, k), "avg_percentile": round(sum(v) / len(v)), "n": len(v)}
+                     for k, v in trait_sum.items()], key=lambda x: -x["avg_percentile"])
+
+    skills = q(f"select a.feedback->>'skill' as skill, round(avg(a.score)::numeric, 1) as avg, count(*) as n "
+               f"from answers a join sessions s on s.id = a.session_id join jobs j on j.id = s.job_id "
+               f"where {F} and a.score is not null and coalesce(a.feedback->>'skill', '') <> '' "
+               f"group by 1 order by n desc, avg desc limit 10", p)
+
+    top = q(f"select s.id, s.overall_score, s.completed_at, s.report->>'content_score' as content_score, "
+            f"s.report->>'delivery_score' as delivery_score, s.report->'summary'->>'hiring_signal' as hiring_signal, "
+            f"s.report->'summary'->>'headline' as headline, p.full_name, p.email, p.headline as candidate_headline, "
+            f"j.id as job_id, j.title as job_title, coalesce(r.status, 'new') as review_status, r.rating "
+            f"from sessions s join jobs j on j.id = s.job_id join profiles p on p.id = s.user_id "
+            f"left join reviews r on r.session_id = s.id where {F} and s.status = 'completed' "
+            f"order by s.overall_score desc nulls last limit 10", p)
+
+    per_job = [] if job_id else q(
+        f"select j.id, j.title, j.status, j.views, j.created_at, j.deadline, {ACCEPTING} as accepting, "
+        f"count(s.id) as applicants, count(s.id) filter (where s.status = 'completed') as completed, "
+        f"round(avg(s.overall_score) filter (where s.status = 'completed')::numeric, 1) as avg_score, "
+        f"max(s.overall_score) as best_score, count(r.session_id) filter (where r.status in ('shortlisted', 'hired')) as shortlisted, "
+        f"count(r.session_id) filter (where r.status = 'hired') as hired "
+        f"from jobs j left join sessions s on s.job_id = j.id left join reviews r on r.session_id = s.id "
+        f"where {F} group by j.id order by j.created_at desc", p)
+
+    applicants = t["applicants"] or 0
+    views = max(int(jobs["views"]), applicants)  # people who apply from a shared link may never load the job page
+    return {
+        "totals": {"jobs": jobs["jobs"], "open_jobs": jobs["open_jobs"], "views": views,
+                   "applicants": applicants, "people": t["people"], "completed": t["completed"],
+                   "in_progress": t["in_progress"], "shortlisted": t["shortlisted"], "hired": t["hired"],
+                   "rejected": t["rejected"], "to_review": t["to_review"],
+                   "avg_score": _f(t["avg_score"]), "median_score": _f(t["median_score"]), "best_score": _f(t["best_score"]),
+                   "completion_rate": round(100 * t["completed"] / applicants) if applicants else None,
+                   "avg_minutes": _f(t["avg_minutes"])},
+        "funnel": [{"stage": "views", "count": views}, {"stage": "started", "count": applicants},
+                   {"stage": "completed", "count": t["completed"]}, {"stage": "shortlisted", "count": t["shortlisted"]},
+                   {"stage": "hired", "count": t["hired"]}],
+        "timeline": timeline, "distribution": buckets, "signals": signals, "traits": traits,
+        "skills": [{"skill": r["skill"], "avg": float(r["avg"]), "n": r["n"]} for r in skills],
+        "top": top, "jobs": per_job,
+    }
+
+
+@router.get("/company/stats")
+def company_stats(lang: str = "en", user: Dict = Depends(recruiter)):
+    return _analytics(user["company_id"], None, "ar" if lang == "ar" else "en")
+
+
+@router.get("/jobs/{jid}/stats")
+def job_stats(jid: str, lang: str = "en", user: Dict = Depends(recruiter)):
+    _job(jid, user)
+    return _analytics(user["company_id"], jid, "ar" if lang == "ar" else "en")
+
+
+@router.get("/jobs/{jid}/candidates.csv")
+def job_candidates_csv(jid: str, user: Dict = Depends(recruiter)):
+    j = _job(jid, user)
+    rows = job_candidates(jid, user)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["rank", "name", "email", "interview_status", "overall_score", "content_score", "delivery_score",
+                "evalbot_signal", "decision", "rating", "notes", "applied_at", "report_url"])
+    for i, r in enumerate(rows, 1):
+        w.writerow([i, r["full_name"] or "", r["email"] or "", r["status"], _f(r["overall_score"]) or "",
+                    r["content_score"] or "", r["delivery_score"] or "", r["hiring_signal"] or "", r["review_status"],
+                    r["rating"] or "", (r["notes"] or "").replace("\n", " "), r["created_at"].strftime("%Y-%m-%d %H:%M"),
+                    f"/app/report/{r['id']}"])
+    name = "".join(ch if ch.isalnum() else "-" for ch in j["title"])[:40] or "job"
+    return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="evalbot-{name}-candidates.csv"'})

@@ -29,8 +29,13 @@ English and Arabic throughout, including right-to-left PDF reports.
 - **Optional camera presence** (eye contact, smiling, face in frame), computed on-device with MediaPipe. Only the numbers leave the browser, never the video.
 - **Progress tracking:** score history, skill breakdown, and a learning plan for your track.
 
+- **A job board:** browse open roles from companies on the platform (search, track, level, on-site/remote/hybrid, job type), apply with one spoken interview, and follow each application's status.
+
 ### For hiring teams
-- Create a job with your own questions or AI-suggested ones and share **one link**.
+- Separate **company accounts** with their own workspace: company profile, job posts and analytics. Company accounts can't apply to jobs, and job seekers can't see company pages.
+- Post a job with location, work mode, job type, salary, skills and a deadline, listed **publicly on the job board** or **private (link only)**.
+- Create the interview with your own questions or AI-suggested ones and share **one link**.
+- A **hiring dashboard**: applicants, completion rate, average and median score, a 30-day applications chart, the hiring funnel (viewed → started → completed → shortlisted → hired), score distribution, EvalBot hiring signals, the **top 10 candidates** across all jobs, the candidate pool's delivery profile and skill averages, and a per-job table. Each job has the same analytics plus search, a minimum-score filter and **CSV export**.
 - Every applicant answers the **same questions with the same time limit**, whenever it suits them.
 - A **ranked candidate list** with scores, a hiring signal, the written assessment, recordings and transcripts.
 - Shortlist, reject, rate and add notes. **People make the decision**; EvalBot informs it.

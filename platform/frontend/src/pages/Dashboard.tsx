@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Meter, Panel, Spinner, Waveform } from "../components/ui";
 import { api, type SessionRow } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useI18n } from "../lib/i18n";
+import CompanyDashboard from "./CompanyDashboard";
 import { SessionList } from "./History";
 
 type Stats = {
@@ -13,6 +14,11 @@ type Stats = {
 };
 
 export default function Dashboard() {
+  const { profile } = useAuth();
+  return profile?.role === "recruiter" ? <CompanyDashboard /> : <CandidateDashboard />;
+}
+
+function CandidateDashboard() {
   const { t } = useI18n();
   const { profile } = useAuth();
   const [stats, setStats] = useState<Stats | null>(null);
@@ -21,7 +27,6 @@ export default function Dashboard() {
     api.get<Stats>("/stats").then(setStats).catch(() => undefined);
     api.get<SessionRow[]>("/sessions").then(setRows).catch(() => setRows([]));
   }, []);
-  if (profile?.role === "recruiter" && !profile.company_id) return <Navigate to="/app/welcome?as=company" replace />;
   if (!stats || !rows) return <Spinner />;
   const first = (profile?.full_name || "").split(" ")[0] || "";
   const tile = (label: string, value: string | number | null) => (
@@ -41,6 +46,7 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-5">
           <div className="hidden h-12 w-36 md:block"><Waveform bars={22} color="var(--color-amber)" /></div>
+          <Link to="/app/board" className="rounded-xl border border-white/40 px-5 py-3 font-medium hover:bg-white/10">{t("browse_jobs")}</Link>
           <Link to="/app/new" className="rounded-xl bg-white px-5 py-3 font-medium text-nile-deep hover:bg-amber-soft dark:bg-paper">{t("nav_new")}</Link>
         </div>
       </div>

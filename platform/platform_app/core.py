@@ -135,7 +135,9 @@ def recruiter(user: Dict = Depends(current_user)) -> Dict:
 # File storage (Supabase Storage, or a local folder for development)
 # --------------------------------------------------------------------------------------
 def _storage_headers(content_type: Optional[str] = None) -> Dict[str, str]:
-    h = {"Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}", "apikey": SUPABASE_SERVICE_ROLE_KEY}
+    h = {"apikey": SUPABASE_SERVICE_ROLE_KEY}
+    if not SUPABASE_SERVICE_ROLE_KEY.startswith("sb_"):  # legacy JWT keys also go in Authorization; new sb_secret keys must not
+        h["Authorization"] = f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"
     if content_type:
         h["Content-Type"] = content_type
     return h

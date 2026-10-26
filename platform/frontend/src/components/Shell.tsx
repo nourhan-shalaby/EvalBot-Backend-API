@@ -1,4 +1,4 @@
-import { Briefcase, History, LayoutDashboard, LogOut, Menu, Moon, Plus, Settings, Sun, UploadCloud, X } from "lucide-react";
+import { Briefcase, FileCheck2, History, LayoutDashboard, LogOut, Menu, Moon, Plus, Search, Settings, Sun, UploadCloud, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
@@ -32,6 +32,7 @@ export function PublicHeader() {
     <header className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-5 sm:px-6">
       <Link to="/" aria-label="EvalBot home"><Logo /></Link>
       <nav className="flex items-center gap-1 sm:gap-2">
+        <Link to="/jobs" className="hidden rounded-xl px-3 py-2 text-sm font-medium text-ink hover:bg-sunken sm:inline-block">{t("browse_jobs")}</Link>
         <LangSwitch />
         <ThemeSwitch />
         {profile ? (
@@ -55,13 +56,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isRecruiter = profile?.role === "recruiter";
   const links = isRecruiter
     ? [
+        { to: "/app", icon: LayoutDashboard, label: t("nav_overview"), end: true },
         { to: "/app/jobs", icon: Briefcase, label: t("nav_jobs") },
-        { to: "/app", icon: LayoutDashboard, label: t("nav_dashboard"), end: true },
-        { to: "/app/new", icon: Plus, label: t("nav_new") },
-        { to: "/app/history", icon: History, label: t("nav_history") },
       ]
     : [
         { to: "/app", icon: LayoutDashboard, label: t("nav_dashboard"), end: true },
+        { to: "/app/board", icon: Search, label: t("nav_board") },
+        { to: "/app/applications", icon: FileCheck2, label: t("nav_applications") },
         { to: "/app/new", icon: Plus, label: t("nav_new") },
         { to: "/app/history", icon: History, label: t("nav_history") },
       ];

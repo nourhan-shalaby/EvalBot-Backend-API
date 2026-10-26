@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { JobCard } from "../components/jobs";
 import { PublicHeader } from "../components/Shell";
 import { Waveform, useCatalog } from "../components/ui";
-import { api } from "../lib/api";
+import { api, type PublicJob } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
 type Card = { traits: { trait: string; label: string; model_r: number; human_r: number }[]; reference?: { interviews: number } };
@@ -41,6 +42,10 @@ export default function Landing() {
   const { t, lang } = useI18n();
   const catalog = useCatalog();
   const [card, setCard] = useState<Card | null>(null);
+  const [jobs, setJobs] = useState<PublicJob[]>([]);
+  useEffect(() => {
+    api.get<PublicJob[]>("/board").then((j) => setJobs(j.slice(0, 4))).catch(() => undefined);
+  }, []);
   useEffect(() => {
     api.get<Card>(`/model-card?lang=${lang}`).then(setCard).catch(() => setCard(null));
   }, [lang]);
@@ -100,6 +105,17 @@ export default function Landing() {
             </div>
           </div>
         </section>
+
+        {/* open roles from companies on the platform */}
+        {jobs.length > 0 && (
+          <section className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
+            <div className="mb-5 flex items-end justify-between gap-3">
+              <h2 className="text-2xl font-semibold text-ink">{t("open_roles")}</h2>
+              <Link to="/jobs" className="font-medium text-nile hover:underline">{t("see_all_jobs")}</Link>
+            </div>
+            <ul className="grid gap-3 lg:grid-cols-2">{jobs.map((j) => <JobCard key={j.id} job={j} />)}</ul>
+          </section>
+        )}
 
         {/* science */}
         {chart.length > 0 && (

@@ -49,10 +49,12 @@ export default function Jobs() {
                 <p className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-muted">
                   <span>{trackName(catalog?.tracks, j.track, lang)}</span>
                   <Badge tone={tone[j.status]}>{t(`jst_${j.status}`)}</Badge>
+                  {j.visibility === "link" && <Badge>{t("vis_link").split(":")[0]}</Badge>}
                   <span>{fmtDate(j.created_at, lang)}</span>
                 </p>
               </Link>
               <div className="flex items-center gap-6">
+                <div className="text-center"><p className="font-display text-xl font-semibold tabular text-ink">{j.views ?? 0}</p><p className="text-xs text-muted">{t("k_views")}</p></div>
                 <div className="text-center"><p className="font-display text-xl font-semibold tabular text-ink">{j.applicants ?? 0}</p><p className="text-xs text-muted">{t("applicants")}</p></div>
                 <div className="text-center"><p className="font-display text-xl font-semibold tabular text-ink">{j.completed ?? 0}</p><p className="text-xs text-muted">{t("completed_n")}</p></div>
                 <CopyLink token={j.share_token} />
