@@ -64,13 +64,14 @@ TRAINING_CSV = os.getenv("EVALBOT_TRAINING_CSV", "interview_transcripts_by_turke
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY") or os.getenv("ASSEMBLYAI_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_TIMEOUT_S = int(os.getenv("GEMINI_TIMEOUT_S", "60"))
 # Tried in order if the configured model is unavailable (Google retires model IDs regularly)
 GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv(
-    "GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite,gemini-2.5-flash").split(",") if m.strip()]
+    "GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-flash-latest,gemini-2.5-flash").split(",") if m.strip()]
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "interview-speaker-embeddings")
 SPEAKER_MATCH_THRESHOLD = float(os.getenv("SPEAKER_MATCH_THRESHOLD", "0.7"))
 TRANSCRIPTION_TIMEOUT_S = int(os.getenv("TRANSCRIPTION_TIMEOUT_S", "900"))
@@ -204,8 +205,10 @@ def _get_gemini_client():
     with _init_lock:
         if "gemini" not in _services:
             from google import genai
+            from google.genai import types
 
-            _services["gemini"] = genai.Client(api_key=GEMINI_API_KEY)
+            _services["gemini"] = genai.Client(
+                api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_S * 1000))
         return _services["gemini"]
 
 
@@ -639,7 +642,9 @@ def _gemini_json(prompt: str, schema: Dict, temperature: float = 0.4) -> Optiona
     for model in models:
         for attempt in range(3):
             try:
+                t0 = time.time()
                 response = client.models.generate_content(model=model, contents=prompt, config=config)
+                logger.info("Gemini %s answered in %.1fs", model, time.time() - t0)
                 if model != GEMINI_MODEL:
                     logger.info("Switching Gemini model to %s", model)
                     GEMINI_MODEL = model
@@ -648,10 +653,12 @@ def _gemini_json(prompt: str, schema: Dict, temperature: float = 0.4) -> Optiona
                 msg = str(e).lower()
                 unavailable = any(k in msg for k in ("not found", "404", "is not supported", "no longer available",
                                                      "deprecated", "permission_denied", "not available"))
+                overloaded = any(k in msg for k in ("503", "unavailable", "high demand", "overloaded", "429",
+                                                    "resource_exhausted", "timed out", "timeout", "deadline"))
                 logger.warning("Gemini (%s) attempt %d failed: %s", model, attempt + 1, str(e)[:300])
-                if unavailable:
+                if unavailable or (overloaded and attempt >= 1):
                     break  # try the next model
-                time.sleep(2 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1))
     return None
 
 

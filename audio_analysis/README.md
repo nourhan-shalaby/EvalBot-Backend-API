@@ -67,11 +67,11 @@ Set these as **Secrets** in the Space settings. Never put keys in the code.
 
 | Secret | Required | Used for |
 |---|---|---|
-| `ASSEMBLYAI_API_KEY` | yes | Transcription and diarization |
+| `ASSEMBLYAI_API_KEY` (or `ASSEMBLYAI_KEY`) | yes | Transcription and diarization |
 | `GEMINI_API_KEY` | recommended | AI evaluation (without it, the report covers voice metrics only) |
 | `PINECONE_API_KEY` | optional | Use Pinecone for speaker identification. Without it, a built-in vector index is used (saved to `/data` if the Space has persistent storage, otherwise reset on restart) |
 
-Optional variables: `GEMINI_MODEL` (default `gemini-flash-latest`, with automatic fallback to other Flash models if it is unavailable), `PINECONE_INDEX`, `BASE_URL`, `MAX_UPLOAD_MB`.
+Optional variables: `GEMINI_MODEL` (default `gemini-3.5-flash-lite`, with automatic fallback to other Flash models if it is slow or unavailable), `GEMINI_TIMEOUT_S` (default 60), `PINECONE_INDEX`, `BASE_URL`, `MAX_UPLOAD_MB`.
 
 ## Run locally
 
