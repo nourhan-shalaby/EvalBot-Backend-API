@@ -1,89 +1,161 @@
-# EvalBot Interviewer AI Backend API
+# EvalBot — Backend API
 
-This repository contains the Flask-based backend API for the EvalBot project. It is designed to facilitate AI-powered interview simulations by integrating advanced Speech-to-Text (STT) and Text-to-Speech (TTS) capabilities, creating an interactive and efficient interview experience. The API also handles the crucial task of sending user responses for comprehensive external AI-driven evaluation.
+**EvalBot** is an AI-powered interview evaluation system: it runs spoken interviews, analyzes the candidate's recorded answers, and produces a detailed feedback report. It serves recruiters (faster, more consistent screening) and job seekers (a virtual interview coach).
 
-## ✨ Features
+This repository holds the **Flask backend API** that orchestrates the interview flow and connects the system's services: the mobile app, question generation, text-to-speech, speech-to-text, and answer evaluation.
 
-* **AI-Powered Question Generation:** Fetches dynamic interview questions based on specified tracks, difficulty levels, and number of questions from an external service.
-* **Text-to-Speech (TTS) Integration:** Converts textual interview questions into natural-sounding audio using Cartesia.ai. This enhances the realism and interactivity of the interview process.
-* **Speech-to-Text (STT) Transcription:** Transcribes user's audio responses into text using advanced models from Hugging Face Transformers, specifically leveraging the Whisper model (`openai/whisper-tiny`) for high accuracy.
-* **External Evaluation Integration:** Forwards transcribed user answers, along with original question context, to a dedicated external AI evaluation API for detailed assessment and feedback.
-* **Local Development Friendly:** Optimized for easy setup and development on local machines.
-* **Collaboration Ready:** Supports `ngrok` for exposing the local development server to the internet, enabling seamless collaboration with frontend teams.
+> Bachelor's graduation project, Scientific Computing Department, Faculty of Computers and Artificial Intelligence, Benha University (June 2025). Supervised by Dr. Eman Monir.
 
-## 🚀 Getting Started
+---
 
-Follow these steps to set up and run the EvalBot Interviewer AI Backend API on your local machine.
+## System architecture
 
-### Prerequisites
+```mermaid
+flowchart LR
+    APP[Mobile app<br/>Flutter] -->|start interview| API[EvalBot Backend API<br/>Flask]
+    API -->|fetch questions| QG[Question generation<br/>RAG + Gemini]
+    API -->|question text| TTS[Cartesia.ai<br/>Text-to-Speech]
+    TTS -->|question audio| API
+    APP -->|recorded answers| API
+    API -->|speech-to-text| STT[Whisper<br/>Hugging Face]
+    API -->|answer + reference| EV[Evaluation service<br/>NLP scoring]
+    EV -->|score, explanation, resources| API
+    APP -->|full interview audio| AUD[Audio analysis service<br/>FastAPI · Hugging Face Spaces]
+    AUD -->|PDF + JSON report| APP
+```
 
-Before you begin, ensure you have the following installed:
+### Audio analysis service
 
-* **Python 3.9+**
-* **`pip`** (Python package installer)
-* **`ngrok`**: Download and install `ngrok` from [ngrok.com/download](https://ngrok.com/download). This is essential for exposing your local server to the internet for team collaboration.
-* **API Keys/URLs:**
-    * A **Cartesia.ai API Key** for Text-to-Speech functionality.
-    * The **base URL for the external question generation API** (e.g., `https://evalboot-eb9306b2f856.herokuapp.com`).
-    * The **URL for the external evaluation API**.
+A separate FastAPI service (deployed with Docker on Hugging Face Spaces) turns a full interview recording into a candidate report:
 
-### Installation
+1. Audio conversion to 16 kHz mono WAV
+2. Speech-to-text with speaker labels (AssemblyAI)
+3. Prosodic features per utterance: pitch and intensity (librosa)
+4. Speaker identification: NVIDIA NeMo TitaNet embeddings stored and matched in a Pinecone vector index
+5. Role classification (interviewer vs. interviewee): Random Forest on prosodic + TF-IDF features
+6. Voice analysis: speaking rate, filler-word ratio, repetition, and composite confidence / anxiety / hesitation scores
+7. Report generation: Gemini writes the evaluation (summary, competencies, strengths, weaknesses, recommendations), rendered as a multi-page PDF with charts (ReportLab, Matplotlib) plus a JSON output
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [[YOUR_REPOSITORY_LINK_HERE](https://github.com/nourhan-shalaby/EvalBot-Backend-API)]
-    cd [EvalBot-Backend-API]
-    ```
-    *(Replace `[YOUR_REPOSITORY_LINK_HERE]` and `[YOUR_REPOSITORY_NAME]` with your actual repository details.)*
+Space: [huggingface.co/spaces/EvalBot/Audio-EvalBot](https://huggingface.co/spaces/EvalBot/Audio-EvalBot). It's on the free tier, so it may be sleeping and take a minute to wake up.
 
-2.  **Create a virtual environment:**
-    It's highly recommended to use a virtual environment to manage dependencies.
-    ```bash
-    python -m venv venv
-    ```
+---
 
-3.  **Activate the virtual environment:**
-    * **On macOS/Linux:**
-        ```bash
-        source venv/bin/activate
-        ```
-    * **On Windows:**
-        ```bash
-        .\venv\Scripts\activate
-        ```
+## API endpoints
 
-4.  **Install dependencies:**
-    Install all required Python packages using `pip` and the `requirements.txt` file.
-    ```bash
-    pip install -r requirements.txt
-    ```
-    The `requirements.txt` includes:
-    * `Flask`: The web framework for the API.
-    * `requests`: For making HTTP requests to external services.
-    * `python-dotenv`: For loading environment variables from a `.env` file.
-    * `transformers==4.38.0`: Hugging Face's library for STT models (e.g., Whisper).
-    * `accelerate==0.27.2`: A companion library for Transformers, optimizing model loading and execution.
-    * `gunicorn`: A production-ready WSGI HTTP Server.
-    * `setuptools`: For packaging Python projects.
-    * `cartesia`: The client library for Cartesia.ai TTS service.
+### `POST /api/start-interview`
 
-### Environment Variables
+Fetches questions from the question generation service, converts each one to speech with Cartesia.ai, and returns the questions with their audio URLs.
 
-Create a `.env` file in the root directory of your project. This file will store your API keys and external service URLs securely.
+```json
+// request
+{ "track_id": "1", "difficulty": "beginner", "num_questions": 3 }
 
-```dotenv
-# Cartesia.ai API Key for Text-to-Speech
-CARTESIA_API_KEY="your_cartesia_api_key_here"
+// response
+{
+  "status": "success",
+  "interview_data": {
+    "total_questions": 3,
+    "questions": [
+      {
+        "id": 1,
+        "question_number": 1,
+        "question_text": "What is the purpose of a confusion matrix?",
+        "audio_url": "/static/audio/question_1749062113462_0.wav",
+        "gemini_answer": "...",
+        "question_topic": "machine learning",
+        "question_classification": "Beginner"
+      }
+    ]
+  }
+}
+```
 
-# Hugging Face STT Model Name (Default: openai/whisper-tiny)
-HF_STT_MODEL_NAME="openai/whisper-tiny"
+### `POST /api/submit-answers`
 
-# Cartesia.ai TTS Model and Voice IDs (Defaults provided)
-CARTESIA_TTS_MODEL_ID="sonic-english"
-CARTESIA_TTS_VOICE_ID="c2ac25f9-ecc4-4f56-9095-651354df60c0" # A common default English voice
+Takes a list of recorded answers. For each answer it downloads the audio, transcribes it with Whisper, and sends the transcript with the reference answer to the evaluation service.
 
-# Base URL for the external Question Generation API
-API_BASE_URL="[https://evalboot-eb9306b2f856.herokuapp.com](https://evalboot-eb9306b2f856.herokuapp.com)"
+```json
+// request
+[
+  {
+    "question_id": "1",
+    "question_text": "What is the purpose of a confusion matrix?",
+    "gemini_answer": "...",
+    "question_topic": "machine learning",
+    "classification": "Beginner",
+    "audio_url": "https://.../answer_1.wav"
+  }
+]
 
-# URL for the external Evaluation API
-EXTERNAL_EVALUATION_API_URL="your_external_evaluation_api_url_here"
+// response
+[
+  {
+    "question_id": "1",
+    "status": "success",
+    "transcribed_text": "...",
+    "evaluation_result": {
+      "score": "...",
+      "score_explanation": "...",
+      "links": ["..."],
+      "question_topic": "machine learning",
+      "question_classification": "Beginner"
+    }
+  }
+]
+```
+
+### `GET /static/<path>`
+
+Serves the generated question audio files.
+
+---
+
+## Running locally
+
+**Requirements:** Python 3.9+
+
+```bash
+git clone https://github.com/nourhan-shalaby/EvalBot-Backend-API.git
+cd EvalBot-Backend-API
+
+python -m venv venv
+source venv/bin/activate        # Windows: .\venv\Scripts\activate
+pip install -r requirements.txt
+
+cp .env.example .env            # then fill in your keys and service URLs
+python app.py                   # http://localhost:5001
+```
+
+The Whisper model downloads on first run. To try the answer flow, run `python test_submit.py` with the API running.
+
+**Production:** the included `Procfile` runs the app with `gunicorn app:app`.
+
+### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `CARTESIA_API_KEY` | Cartesia.ai text-to-speech |
+| `CARTESIA_TTS_MODEL_ID`, `CARTESIA_TTS_VOICE_ID` | TTS model and voice (defaults provided) |
+| `HF_STT_MODEL_NAME` | Whisper model (default `openai/whisper-tiny`) |
+| `API_BASE_URL` | Question generation service |
+| `EXTERNAL_EVALUATION_API_URL` | Answer evaluation service |
+| `PORT`, `FLASK_DEBUG` | Server port (default 5001) and debug mode (default off) |
+
+---
+
+## Tech stack
+
+Python · Flask · FastAPI · Hugging Face Transformers (Whisper) · Cartesia.ai · AssemblyAI · NVIDIA NeMo · Pinecone · librosa · scikit-learn · Gemini API · ReportLab · Docker · Hugging Face Spaces
+
+## Related repositories
+
+- Mobile app (Flutter): [Mohamed-Essam-Mohamed/EVALBOT-APP](https://github.com/Mohamed-Essam-Mohamed/EVALBOT-APP)
+- Database: [MHMD-SAYID/GraduationProject](https://github.com/MHMD-SAYID/GraduationProject)
+
+## Team
+
+**Backend APIs, system integration & audio analysis:** Nourhan Saber Shalaby
+
+Mohamed Mahmoud Mohamed · Mohamed Sayid Mohamed · Mohamed Mohamed Barakat · Mohamed Adel Hosny · Mohamed Essam Mohamed · Mohamed Mostafa Salama · Amr Mohamed Ahmed · Ibrahim Ahmed Mohamed · Elzahraa Eslam Marzouk
+
+Supervised by **Dr. Eman Monir**, with Eng. Esraa Taher and Eng. Eman Naser.
