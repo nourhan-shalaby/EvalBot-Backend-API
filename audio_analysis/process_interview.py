@@ -83,14 +83,14 @@ def validate_env_vars() -> Dict[str, bool]:
     """Report which external services are configured. Only AssemblyAI is mandatory."""
     status = {
         "assemblyai": bool(ASSEMBLYAI_API_KEY),
-        "pinecone": bool(PINECONE_API_KEY),
+        "pinecone": bool(PINECONE_API_KEY),  # optional: falls back to the built-in local index
         "gemini": bool(GEMINI_API_KEY),
     }
     for name, ok in status.items():
         if not ok:
             level = logging.ERROR if name == "assemblyai" else logging.WARNING
             logger.log(level, "%s API key not set; %s", name,
-                       "transcription will fail" if name == "assemblyai" else "this step will be skipped")
+                       "transcription will fail" if name == "assemblyai" else "using the built-in local speaker index" if name == "pinecone" else "this step will be skipped")
     return status
 
 
@@ -117,9 +117,66 @@ def _get_speaker_model():
         return _services["speaker_model"]
 
 
+class LocalSpeakerIndex:
+    """Small built-in vector store used when Pinecone is not configured.
+
+    Stores L2-normalized speaker embeddings in a .npz file and matches by cosine
+    similarity. Mirrors the subset of the Pinecone Index API that the pipeline uses.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._lock = threading.Lock()
+        self.ids: List[str] = []
+        self.names: List[str] = []
+        self.vectors = np.zeros((0, 192), dtype=np.float32)
+        if os.path.exists(path):
+            try:
+                data = np.load(path, allow_pickle=False)
+                self.ids, self.names = list(data["ids"]), list(data["names"])
+                self.vectors = data["vectors"].astype(np.float32)
+            except Exception as e:
+                logger.warning("Could not load local speaker index (%s); starting empty", e)
+
+    def query(self, vector, top_k=1, include_metadata=True):
+        with self._lock:
+            if not len(self.ids):
+                return {"matches": []}
+            v = np.asarray(vector, dtype=np.float32)
+            v = v / (np.linalg.norm(v) + 1e-9)
+            scores = self.vectors @ v
+            order = np.argsort(-scores)[:top_k]
+            return {"matches": [{"id": self.ids[i], "score": float(scores[i]),
+                                 "metadata": {"speaker_name": self.names[i]}} for i in order]}
+
+    def upsert(self, vectors):
+        with self._lock:
+            for item in vectors:
+                v = np.asarray(item["values"], dtype=np.float32)
+                v = v / (np.linalg.norm(v) + 1e-9)
+                self.ids.append(item["id"])
+                self.names.append(item.get("metadata", {}).get("speaker_name", item["id"]))
+                self.vectors = np.vstack([self.vectors, v[None, :]])
+            tmp = self.path + ".tmp.npz"
+            np.savez(tmp, ids=np.array(self.ids), names=np.array(self.names), vectors=self.vectors)
+            os.replace(tmp, self.path)
+
+
+def _local_index_path() -> str:
+    # /data is the persistent-storage mount on Hugging Face Spaces (if enabled)
+    base = os.getenv("SPEAKER_INDEX_DIR") or ("/data" if os.path.isdir("/data") and os.access("/data", os.W_OK) else MODEL_DIR)
+    os.makedirs(base, exist_ok=True)
+    return os.path.join(base, "speaker_index.npz")
+
+
 def _get_pinecone_index():
+    """Speaker vector index: Pinecone if a key is configured, otherwise the built-in local index."""
     if not PINECONE_API_KEY:
-        return None
+        with _init_lock:
+            if "local_index" not in _services:
+                _services["local_index"] = LocalSpeakerIndex(_local_index_path())
+                logger.info("Using built-in local speaker index at %s", _services["local_index"].path)
+            return _services["local_index"]
     with _init_lock:
         if "pinecone_index" not in _services:
             from pinecone import Pinecone, ServerlessSpec

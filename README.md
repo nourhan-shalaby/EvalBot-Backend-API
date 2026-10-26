@@ -33,7 +33,7 @@ A FastAPI service, deployed with Docker on Hugging Face Spaces, that turns a ful
 1. Audio conversion to 16 kHz mono WAV (ffmpeg)
 2. Speech-to-text with speaker diarization (AssemblyAI)
 3. Prosodic features per utterance: pitch and intensity (librosa)
-4. Speaker identification: NVIDIA NeMo TitaNet embeddings matched against and enrolled into a Pinecone vector index
+4. Speaker identification: NVIDIA NeMo TitaNet embeddings matched by cosine similarity against a vector index (Pinecone, or a built-in NumPy index)
 5. Role classification (interviewer vs. interviewee): Random Forest trained on ~3,000 labeled utterances from the MIT Interview dataset (~92% held-out accuracy), aggregated per speaker
 6. Voice analysis: speaking rate, filler words, repetition, pitch, jitter/shimmer, and confidence / anxiety / hesitation scores
 7. Evaluation: Gemini returns a structured assessment (strengths with evidence, development areas, role fit, recommendations, content score)

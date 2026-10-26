@@ -13,7 +13,7 @@ Part of **EvalBot**, a graduation project at the Faculty of Computers and Artifi
 | 1. Conversion | Any audio/video file to 16 kHz mono WAV | ffmpeg |
 | 2. Transcription | Speech-to-text with speaker diarization (filler words kept) | AssemblyAI |
 | 3. Prosody | Pitch and intensity per utterance | librosa |
-| 4. Speaker identification | One voice embedding per speaker, matched against or enrolled into a vector index, so returning speakers are recognized | NVIDIA NeMo TitaNet, Pinecone |
+| 4. Speaker identification | One voice embedding per speaker, matched by cosine similarity against or enrolled into a vector index, so returning speakers are recognized | NVIDIA NeMo TitaNet; Pinecone, or a built-in NumPy vector index when Pinecone isn't configured |
 | 5. Role classification | Decides which speaker is the interviewer and which is the candidate | Random Forest (TF-IDF + handcrafted features) trained on ~3,000 labeled utterances from the MIT Interview dataset; ~92% utterance accuracy on held-out interviews, aggregated per speaker |
 | 6. Voice analysis | Speaking rate, filler words, repetition, pitch, jitter/shimmer, and confidence, anxiety and hesitation scores | librosa, NumPy |
 | 7. Evaluation | Structured assessment: summary, strengths with evidence, development areas, role fit, recommendations, next steps, content score | Gemini (JSON schema output) |
@@ -58,7 +58,7 @@ Set these as **Secrets** in the Space settings. Never put keys in the code.
 |---|---|---|
 | `ASSEMBLYAI_API_KEY` | yes | Transcription and diarization |
 | `GEMINI_API_KEY` | recommended | AI evaluation (without it, the report covers voice metrics only) |
-| `PINECONE_API_KEY` | optional | Persistent speaker identification |
+| `PINECONE_API_KEY` | optional | Use Pinecone for speaker identification. Without it, a built-in vector index is used (saved to `/data` if the Space has persistent storage, otherwise reset on restart) |
 
 Optional variables: `GEMINI_MODEL` (default `gemini-2.5-flash`), `PINECONE_INDEX`, `BASE_URL`, `MAX_UPLOAD_MB`.
 
