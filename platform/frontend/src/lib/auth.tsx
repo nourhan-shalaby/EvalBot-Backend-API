@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, type Profile } from "./api";
 
-type Config = { enabled: boolean; supabase_url: string; supabase_anon_key: string; dev_auth: boolean; calibrated_model: boolean };
+type Config = { enabled: boolean; supabase_url: string; supabase_anon_key: string; dev_auth: boolean; calibrated_model: boolean; providers?: { google?: boolean } };
 
 let supabase: SupabaseClient | null = null;
 let config: Config | null = null;

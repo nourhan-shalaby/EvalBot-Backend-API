@@ -141,7 +141,8 @@ const en = {
   skills_pool: "Skills across all answers", jobs_table: "Jobs at a glance", export_csv: "Export CSV", c_job: "Job",
   empty_company: "Post your first job to start receiving interviews. Public jobs appear on the EvalBot job board, and every job gets a link you can share anywhere.",
   job_stats: "This job in numbers", search_candidates: "Search candidates", min_score: "Minimum score",
-  co_new_job_cta: "Post a job", out_of_100: "out of 100",
+  co_new_job_cta: "Post a job", out_of_100: "out of 100", delete_job: "Delete job",
+  delete_job_confirm: "Delete this job and all of its interviews? This can't be undone. To stop new applications but keep the results, set the status to Closed instead.",
 };
 
 type Dict = typeof en;
@@ -287,7 +288,8 @@ const ar: Dict = {
   skills_pool: "المهارات عبر كل الإجابات", jobs_table: "الوظائف باختصار", export_csv: "تصدير CSV", c_job: "الوظيفة",
   empty_company: "انشر أول وظيفة لتبدأ في استقبال المقابلات. الوظائف العامة تظهر في لوحة وظائف EvalBot، ولكل وظيفة رابط تشاركه في أي مكان.",
   job_stats: "الوظيفة بالأرقام", search_candidates: "ابحث في المرشحين", min_score: "أقل درجة",
-  co_new_job_cta: "انشر وظيفة", out_of_100: "من 100",
+  co_new_job_cta: "انشر وظيفة", out_of_100: "من 100", delete_job: "حذف الوظيفة",
+  delete_job_confirm: "حذف هذه الوظيفة وكل مقابلاتها؟ لا يمكن التراجع عن ذلك. لإيقاف التقديم مع الاحتفاظ بالنتائج، اجعل الحالة «مغلقة» بدلاً من الحذف.",
 };
 
 export type Lang = "en" | "ar";

@@ -144,7 +144,13 @@ export default function JobEditor() {
       </Panel>
 
       {error && <ErrorNote>{error}</ErrorNote>}
-      <div className="flex justify-end gap-3">
+      <div className="flex flex-wrap justify-end gap-3">
+        {id && (
+          <Button variant="quiet" className="me-auto text-danger hover:bg-danger-soft" onClick={async () => {
+            if (!window.confirm(t("delete_job_confirm"))) return;
+            try { await api.del(`/jobs/${id}`); nav("/app/jobs"); } catch (e: any) { setError(e.message); }
+          }}><Trash2 size={16} /> {t("delete_job")}</Button>
+        )}
         <Button variant="quiet" onClick={() => nav(-1)}>{t("cancel")}</Button>
         <Button size="lg" onClick={save} busy={busy} disabled={title.trim().length < 2 || !qs.some((x) => x.text.trim())}>{t("save_job")}</Button>
       </div>
