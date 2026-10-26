@@ -1,8 +1,10 @@
-import { Pencil, Star } from "lucide-react";
+import { Download, Pencil, Search, Star } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Badge, Panel, Spinner, StatusBadge, fmtDate, scoreColor, useCatalog } from "../components/ui";
-import { api, type CandidateRow, type Job } from "../lib/api";
+import { Distribution, Funnel, KpiGrid, Signals, SkillsPanel, TraitsPanel, reviewTone, signalTone } from "../components/hiring";
+import { JobFacts, Skills } from "../components/jobs";
+import { Badge, Button, Input, Panel, Select, Spinner, StatusBadge, fmtDate, scoreColor, useCatalog } from "../components/ui";
+import { api, type CandidateRow, type HiringStats, type Job } from "../lib/api";
 import { trackName, useI18n } from "../lib/i18n";
 import { CopyLink } from "./Jobs";
 
@@ -16,14 +18,37 @@ export default function JobDetail() {
   const [job, setJob] = useState<Job | null>(null);
   const [rows, setRows] = useState<CandidateRow[] | null>(null);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
+  const [stats, setStats] = useState<HiringStats | null>(null);
+  const [search, setSearch] = useState("");
+  const [minScore, setMinScore] = useState("0");
+  const [exporting, setExporting] = useState(false);
   useEffect(() => {
     api.get<Job>(`/jobs/${id}`).then(setJob);
     api.get<CandidateRow[]>(`/jobs/${id}/candidates`).then(setRows);
   }, [id]);
+  useEffect(() => {
+    api.get<HiringStats>(`/jobs/${id}/stats?lang=${lang}`).then(setStats).catch(() => undefined);
+  }, [id, lang]);
   if (!job || !rows) return <Spinner />;
-  const shown = rows.filter((r) => filter === "all" || r.review_status === filter);
-  const sigTone = (s: string | null) => (s === "strong_yes" || s === "yes" ? "good" : s === "maybe" ? "warn" : s === "no" ? "bad" : "neutral");
-  const rvTone = { new: "neutral", shortlisted: "info", rejected: "bad", hired: "good" } as const;
+  const needle = search.trim().toLowerCase();
+  const shown = rows.filter((r) => (filter === "all" || r.review_status === filter)
+    && (!needle || `${r.full_name} ${r.email}`.toLowerCase().includes(needle))
+    && (+minScore === 0 || (r.overall_score ?? -1) >= +minScore));
+  const sigTone = signalTone;
+  const rvTone = reviewTone;
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const blob = await api.blob(`/jobs/${id}/candidates.csv`);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `evalbot-${job.title.replace(/[^\w]+/g, "-")}-candidates.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -37,9 +62,34 @@ export default function JobDetail() {
           <Link to={`/app/jobs/${job.id}/edit`} className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-ink hover:border-nile"><Pencil size={14} /> {t("edit")}</Link>
         </div>
       </div>
-      <p className="text-sm text-muted">{t("share_hint")}</p>
+      <div className="space-y-3">
+        <JobFacts job={job} />
+        <Skills skills={job.skills} />
+        <p className="text-sm text-muted">{job.visibility === "public" ? t("vis_public") : t("vis_link")}. {t("share_hint")}</p>
+      </div>
+
+      {stats && stats.totals.applicants > 0 && (
+        <>
+          <h2 className="pt-2 text-xl font-semibold text-ink">{t("job_stats")}</h2>
+          <KpiGrid s={stats.totals} />
+          <div className="grid gap-6 lg:grid-cols-3">
+            <Funnel data={stats.funnel} />
+            <Distribution data={stats.distribution} />
+            <Signals data={stats.signals} />
+          </div>
+        </>
+      )}
 
       <Panel title={t("candidates_title")} action={
+        <Button variant="outline" onClick={exportCsv} busy={exporting} disabled={!rows.length}><Download size={16} /> {t("export_csv")}</Button>
+      }>
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center">
+          <label className="relative block md:w-64">
+            <Search size={16} className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted" />
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("search_candidates")} className="ps-9" aria-label={t("search_candidates")} />
+          </label>
+          <Select className="md:w-44" value={minScore} onChange={setMinScore}
+            options={[0, 50, 60, 70, 80].map((v) => ({ value: String(v), label: v ? `${t("min_score")}: ${v}+` : `${t("min_score")}: –` }))} />
         <div className="flex flex-wrap gap-1">
           {FILTERS.map((f) => (
             <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f}
@@ -48,7 +98,7 @@ export default function JobDetail() {
             </button>
           ))}
         </div>
-      }>
+        </div>
         {shown.length === 0 ? (
           <p className="py-6 text-center text-muted">{t("empty_candidates")}</p>
         ) : (
@@ -87,6 +137,12 @@ export default function JobDetail() {
           </div>
         )}
       </Panel>
+      {stats && stats.totals.completed > 0 && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <TraitsPanel data={stats.traits} />
+          <SkillsPanel data={stats.skills} />
+        </div>
+      )}
       <p className="text-sm text-muted">{t("fairness")}</p>
     </div>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Button, ErrorNote, Field, Input, Panel, Select, useCatalog } from "../components/ui";
+import { Button, ErrorNote, Field, Input, Panel, Select, Textarea, useCatalog } from "../components/ui";
+import { SIZES } from "./Onboarding";
 import { api } from "../lib/api";
 import { updatePassword, useAuth } from "../lib/auth";
 import { useI18n } from "../lib/i18n";
@@ -12,6 +13,7 @@ export default function SettingsPage() {
   const [headline, setHeadline] = useState("");
   const [track, setTrack] = useState("");
   const [company, setCompany] = useState("");
+  const [co, setCo] = useState({ website: "", industry: "", size: "11-50", location: "", about: "" });
   const [pw, setPw] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -23,6 +25,8 @@ export default function SettingsPage() {
     setHeadline(profile.headline || "");
     setTrack(profile.target_track || "");
     setCompany(profile.company?.name || "");
+    const c = profile.company;
+    if (c) setCo({ website: c.website || "", industry: c.industry || "", size: c.size || "11-50", location: c.location || "", about: c.about || "" });
   }, [profile]);
 
   const save = async () => {
@@ -30,7 +34,7 @@ export default function SettingsPage() {
     setError(null);
     try {
       await api.patch("/me", { full_name: name, headline, target_track: track || null });
-      if (profile?.role === "recruiter" && company.trim()) await api.post("/companies", { name: company.trim() });
+      if (profile?.role === "recruiter" && company.trim()) await api.post("/companies", { name: company.trim(), ...co });
       await refresh();
       setMsg(t("saved"));
     } catch (e: any) {
@@ -61,10 +65,17 @@ export default function SettingsPage() {
           <Field label={t("target_track")}>
             <Select value={track} onChange={setTrack} options={[{ value: "", label: "—" }, ...(catalog?.tracks ?? []).map((x) => ({ value: x.id, label: lang === "ar" ? x.ar : x.en }))]} />
           </Field>
-          {profile?.role === "recruiter" && (
-            <Field label={t("company")}><Input value={company} onChange={(e) => setCompany(e.target.value)} /></Field>
-          )}
         </div>
+        {profile?.role === "recruiter" && (
+          <div className="mt-6 grid gap-4 border-t border-line pt-6 sm:grid-cols-2">
+            <Field label={t("company_name")}><Input value={company} onChange={(e) => setCompany(e.target.value)} /></Field>
+            <Field label={t("website")}><Input value={co.website} onChange={(e) => setCo({ ...co, website: e.target.value })} type="url" placeholder="https://" /></Field>
+            <Field label={t("industry")}><Input value={co.industry} onChange={(e) => setCo({ ...co, industry: e.target.value })} /></Field>
+            <Field label={t("company_size")}><Select value={co.size} onChange={(v) => setCo({ ...co, size: v })} options={SIZES.map((x) => ({ value: x, label: x }))} /></Field>
+            <Field label={t("company_loc")}><Input value={co.location} onChange={(e) => setCo({ ...co, location: e.target.value })} /></Field>
+            <div className="sm:col-span-2"><Field label={t("company_about")}><Textarea value={co.about} onChange={(e) => setCo({ ...co, about: e.target.value })} /></Field></div>
+          </div>
+        )}
         <div className="mt-5 flex items-center gap-3">
           <Button onClick={save} busy={busy}>{t("save")}</Button>
           {msg && <span className="text-sm text-nile">{msg}</span>}

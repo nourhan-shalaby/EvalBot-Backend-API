@@ -2,10 +2,12 @@ import { Building2, Mic } from "lucide-react";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PublicHeader } from "../components/Shell";
-import { Button, ErrorNote, Field, Input } from "../components/ui";
+import { Button, ErrorNote, Field, Input, Select, Textarea } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useI18n } from "../lib/i18n";
+
+export const SIZES = ["1-10", "11-50", "51-200", "201-1000", "1000+"];
 
 export default function Onboarding() {
   const { t } = useI18n();
@@ -15,6 +17,10 @@ export default function Onboarding() {
   const [choice, setChoice] = useState<"candidate" | "recruiter">(params.get("as") === "company" ? "recruiter" : "candidate");
   const [company, setCompany] = useState("");
   const [website, setWebsite] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [size, setSize] = useState("11-50");
+  const [location, setLocation] = useState("");
+  const [about, setAbout] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,13 +29,13 @@ export default function Onboarding() {
     setError(null);
     try {
       if (choice === "recruiter") {
-        await api.post("/companies", { name: company, website: website || null });
+        await api.post("/companies", { name: company, website: website || null, industry: industry || null, size, location: location || null, about: about || null });
         await refresh();
         nav("/app/jobs");
       } else {
         await api.patch("/me", { role: "candidate" });
         await refresh();
-        nav("/app/new");
+        nav("/app");
       }
     } catch (e: any) {
       setError(e.message);
@@ -61,7 +67,13 @@ export default function Onboarding() {
         {choice === "recruiter" && (
           <div className="mt-6 space-y-4">
             <Field label={t("company_name")}><Input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field>
-            <Field label={`${t("website")} (${t("optional")})`}><Input value={website} onChange={(e) => setWebsite(e.target.value)} type="url" placeholder="https://" /></Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label={t("industry")}><Input value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="Software, Banking, Telecom…" /></Field>
+              <Field label={t("company_size")}><Select value={size} onChange={setSize} options={SIZES.map((x) => ({ value: x, label: x }))} /></Field>
+              <Field label={t("company_loc")}><Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder={t("location_ph")} /></Field>
+              <Field label={`${t("website")} (${t("optional")})`}><Input value={website} onChange={(e) => setWebsite(e.target.value)} type="url" placeholder="https://" /></Field>
+            </div>
+            <Field label={`${t("company_about")} (${t("optional")})`}><Textarea value={about} onChange={(e) => setAbout(e.target.value)} /></Field>
           </div>
         )}
         {error && <div className="mt-4"><ErrorNote>{error}</ErrorNote></div>}

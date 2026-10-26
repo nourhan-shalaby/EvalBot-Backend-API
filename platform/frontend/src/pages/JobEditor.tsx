@@ -18,6 +18,13 @@ export default function JobEditor() {
   const [secs, setSecs] = useState(120);
   const [status, setStatus] = useState<Job["status"]>("open");
   const [qs, setQs] = useState<PlanQuestion[]>([{ text: "" }]);
+  const [location, setLocation] = useState("");
+  const [workMode, setWorkMode] = useState<Job["work_mode"]>("onsite");
+  const [empType, setEmpType] = useState<Job["employment_type"]>("full_time");
+  const [salary, setSalary] = useState("");
+  const [skills, setSkills] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [visibility, setVisibility] = useState<Job["visibility"]>("public");
   const [busy, setBusy] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +34,8 @@ export default function JobEditor() {
     api.get<Job>(`/jobs/${id}`).then((j) => {
       setTitle(j.title); setTrack(j.track); setLevel(j.level); setDesc(j.description || "");
       setSecs(j.answer_seconds); setStatus(j.status); setQs(j.questions.length ? j.questions : [{ text: "" }]);
+      setLocation(j.location || ""); setWorkMode(j.work_mode); setEmpType(j.employment_type); setSalary(j.salary || "");
+      setSkills((j.skills || []).join(", ")); setDeadline(j.deadline || ""); setVisibility(j.visibility);
       setLoaded(true);
     });
   }, [id]);
@@ -56,7 +65,11 @@ export default function JobEditor() {
     setBusy(true);
     setError(null);
     try {
-      const body = { title, track, level, description: desc, answer_seconds: secs, status, questions: qs.filter((x) => x.text.trim()) };
+      const body = {
+        title, track, level, description: desc, answer_seconds: secs, status, questions: qs.filter((x) => x.text.trim()),
+        location: location.trim() || null, work_mode: workMode, employment_type: empType, salary: salary.trim() || null,
+        skills: skills.split(/[,،\n]/).map((x) => x.trim()).filter(Boolean), deadline: deadline || null, visibility,
+      };
       const j = id ? await api.put<Job>(`/jobs/${id}`, body) : await api.post<Job>("/jobs", body);
       nav(`/app/jobs/${j.id}`);
     } catch (e: any) {
@@ -70,7 +83,7 @@ export default function JobEditor() {
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-semibold text-ink">{id ? title : t("new_job")}</h1>
-      <Panel>
+      <Panel title={t("job_basics")}>
         <div className="grid gap-4 md:grid-cols-2">
           <Field label={t("job_title")}><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Junior Data Engineer" /></Field>
           <Field label={t("track")}><Select value={track} onChange={setTrack} options={catalog.tracks.map((x) => ({ value: x.id, label: lang === "ar" ? x.ar : x.en }))} /></Field>
@@ -83,11 +96,34 @@ export default function JobEditor() {
               <Select value={status} onChange={(v) => setStatus(v as Job["status"])} options={(["open", "draft", "closed"] as const).map((s) => ({ value: s, label: t(`jst_${s}`) }))} />
             </Field>
           </div>
-          <div className="md:col-span-2"><Field label={t("job_desc")}><Textarea value={desc} onChange={(e) => setDesc(e.target.value)} /></Field></div>
+          <Field label={t("location")}><Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder={t("location_ph")} /></Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label={t("work_mode")}>
+              <Select value={workMode} onChange={(v) => setWorkMode(v as Job["work_mode"])} options={(["onsite", "remote", "hybrid"] as const).map((m) => ({ value: m, label: t(`wm_${m}`) }))} />
+            </Field>
+            <Field label={t("employment_type")}>
+              <Select value={empType} onChange={(v) => setEmpType(v as Job["employment_type"])} options={(["full_time", "part_time", "internship", "contract"] as const).map((m) => ({ value: m, label: t(`et_${m}`) }))} />
+            </Field>
+          </div>
+          <Field label={`${t("salary")} (${t("optional")})`}><Input value={salary} onChange={(e) => setSalary(e.target.value)} placeholder={t("salary_ph")} /></Field>
+          <Field label={`${t("deadline_l")} (${t("optional")})`}><Input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
+          <div className="md:col-span-2"><Field label={t("skills_req")}><Input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder={t("skills_ph")} dir="ltr" /></Field></div>
+          <div className="md:col-span-2"><Field label={t("job_desc")}><Textarea value={desc} onChange={(e) => setDesc(e.target.value)} className="min-h-40" /></Field></div>
+          <div className="md:col-span-2">
+            <span className="mb-1.5 block text-sm font-medium text-ink">{t("visibility")}</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(["public", "link"] as const).map((v) => (
+                <button key={v} type="button" onClick={() => setVisibility(v)} aria-pressed={visibility === v}
+                  className={`rounded-xl border px-4 py-3 text-start text-[15px] ${visibility === v ? "border-nile bg-nile-soft text-nile-deep" : "border-line text-ink hover:border-nile"}`}>
+                  {t(v === "public" ? "vis_public" : "vis_link")}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </Panel>
 
-      <Panel title={t("questions")} action={<Button variant="outline" onClick={suggest} busy={suggesting}><Sparkles size={16} /> {suggesting ? t("suggesting") : t("suggest")}</Button>}>
+      <Panel title={`${t("job_interview")}: ${t("questions")}`} action={<Button variant="outline" onClick={suggest} busy={suggesting}><Sparkles size={16} /> {suggesting ? t("suggesting") : t("suggest")}</Button>}>
         <ol className="space-y-3">
           {qs.map((q, i) => (
             <li key={i} className="flex items-start gap-2">

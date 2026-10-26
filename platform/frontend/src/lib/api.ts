@@ -52,8 +52,10 @@ export type Profile = {
   headline: string | null;
   target_track: string | null;
   locale: string;
-  company?: { id: string; name: string; website?: string | null } | null;
+  company?: Company | null;
 };
+
+export type Company = { id: string; name: string; website?: string | null; about?: string | null; industry?: string | null; size?: string | null; location?: string | null };
 
 export type Track = { id: string; en: string; ar: string; group: string };
 export type Catalog = { tracks: Track[]; levels: string[]; types: string[] };
@@ -158,6 +160,55 @@ export type Job = {
   created_at: string;
   applicants?: number;
   completed?: number;
+  location: string | null;
+  work_mode: WorkMode;
+  employment_type: EmploymentType;
+  salary: string | null;
+  skills: string[];
+  deadline: string | null;
+  visibility: "public" | "link";
+  views?: number;
+};
+
+export type WorkMode = "onsite" | "remote" | "hybrid";
+export type EmploymentType = "full_time" | "part_time" | "internship" | "contract";
+
+/** A job as candidates see it (job board and apply page). */
+export type PublicJob = {
+  id: string; title: string; track: string; level: string; location: string | null; work_mode: WorkMode;
+  employment_type: EmploymentType; salary: string | null; skills: string[]; deadline: string | null; share_token: string;
+  created_at: string; answer_seconds: number; question_count: number; company: string; website: string | null;
+  industry: string | null; company_size: string | null; company_about: string | null; company_location: string | null;
+  snippet?: string; applicants?: number; description?: string | null; status?: string; accepting?: boolean;
+};
+
+export type Application = {
+  id: string; status: Session["status"]; overall_score: number | null; created_at: string; completed_at: string | null;
+  title: string; share_token: string; location: string | null; work_mode: WorkMode; employment_type: EmploymentType;
+  company: string; review_status: "new" | "shortlisted" | "rejected" | "hired"; answered: number; planned: number;
+};
+
+export type TopCandidate = {
+  id: string; overall_score: number | null; completed_at: string; content_score: string | null; delivery_score: string | null;
+  hiring_signal: string | null; headline: string | null; full_name: string | null; email: string | null;
+  candidate_headline: string | null; job_id: string; job_title: string; review_status: CandidateRow["review_status"]; rating: number | null;
+};
+
+export type HiringStats = {
+  totals: {
+    jobs: number; open_jobs: number; views: number; applicants: number; people: number; completed: number; in_progress: number;
+    shortlisted: number; hired: number; rejected: number; to_review: number; avg_score: number | null; median_score: number | null;
+    best_score: number | null; completion_rate: number | null; avg_minutes: number | null;
+  };
+  funnel: { stage: "views" | "started" | "completed" | "shortlisted" | "hired"; count: number }[];
+  timeline: { date: string; applicants: number; completed: number }[];
+  distribution: { range: string; count: number }[];
+  signals: Record<"strong_yes" | "yes" | "maybe" | "no", number>;
+  traits: { trait: string; label: string; avg_percentile: number; n: number }[];
+  skills: { skill: string; avg: number; n: number }[];
+  top: TopCandidate[];
+  jobs: { id: string; title: string; status: Job["status"]; views: number; created_at: string; deadline: string | null; accepting: boolean;
+    applicants: number; completed: number; avg_score: number | null; best_score: number | null; shortlisted: number; hired: number }[];
 };
 
 export type CandidateRow = {
