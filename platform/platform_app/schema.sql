@@ -110,3 +110,11 @@ alter table jobs      enable row level security;
 alter table sessions  enable row level security;
 alter table answers   enable row level security;
 alter table reviews   enable row level security;
+
+-- v3: camera analysis, proctoring, video answers, CV profiles
+alter table jobs add column if not exists require_camera boolean not null default false;
+alter table jobs add column if not exists record_video boolean not null default false;
+alter table answers add column if not exists media text not null default 'audio';   -- audio | video
+alter table profiles add column if not exists cv jsonb;
+alter table profiles add column if not exists cv_text text;
+alter table profiles add column if not exists cv_updated_at timestamptz;

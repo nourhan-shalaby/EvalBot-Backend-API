@@ -113,6 +113,9 @@ Rules:
 # --------------------------------------------------------------------------------------
 # Answer evaluation (one recorded answer)
 # --------------------------------------------------------------------------------------
+SOFT_SKILLS = ["communication", "teamwork", "conflict_resolution", "time_management", "adaptability", "leadership",
+               "problem_solving", "emotional_intelligence"]
+
 ANSWER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -124,9 +127,17 @@ ANSWER_SCHEMA = {
         "delivery_tip": {"type": "string"},
         "improved_answer": {"type": "string"},
         "followup_question": {"type": "string", "description": "a natural probing follow-up, or empty string if not needed"},
+        "rubric": {"type": "object", "properties": {
+            "clarity": {"type": "integer", "description": "0-10, how clearly the thoughts are articulated"},
+            "example_quality": {"type": "integer", "description": "0-10, relevance and depth of real examples"},
+            "structure": {"type": "integer", "description": "0-10, logical flow (STAR where it fits)"},
+            "outcome": {"type": "integer", "description": "0-10, a concrete result, resolution or learning"}},
+            "required": ["clarity", "example_quality", "structure", "outcome"]},
+        "soft_skills": {"type": "array", "items": {"type": "string", "enum": SOFT_SKILLS},
+                        "description": "soft skills this answer gives real evidence of (may be empty)"},
     },
     "required": ["score", "relevance", "summary", "strengths", "improvements", "delivery_tip", "improved_answer",
-                 "followup_question"],
+                 "followup_question", "rubric", "soft_skills"],
 }
 
 
@@ -141,7 +152,7 @@ def transcribe_answer(audio_bytes: bytes, suffix: str = ".webm") -> Dict:
         y, sr = librosa.load(wav, sr=16000)
         if len(y) < sr:
             return {"transcript": "", "duration_s": len(y) / sr, "voice": {"error": "too short"}, "silent": True}
-        tr = pi.transcribe(wav, speakers_expected=None, diarize=False)
+        tr = pi.transcribe(wav, speakers_expected=None, diarize=True)
         words = tr.get("words") or []
         text = (tr.get("text") or "").strip()
         if not words or not text:
@@ -150,6 +161,15 @@ def transcribe_answer(audio_bytes: bytes, suffix: str = ".webm") -> Dict:
         utt = {"role": "Interviewee", "start": start, "end": end, "text": text,
                "prosodic_features": pi.extract_prosodic_features(y, sr, start, end)}
         voice = pi.analyze_interviewee_voice(y, sr, [utt])
+        # integrity: a second voice speaking a substantial part of the answer
+        counts: Dict[str, int] = {}
+        for w in words:
+            if w.get("speaker"):
+                counts[w["speaker"]] = counts.get(w["speaker"], 0) + 1
+        ranked = sorted(counts.values(), reverse=True)
+        other = sum(ranked[1:])
+        voice["speakers"] = len(counts) or 1
+        voice["second_voice"] = bool(other >= 10 and other / max(1, len(words)) >= 0.25)
         return {"transcript": text, "duration_s": round((end - start) / 1000, 1), "voice": voice, "silent": False,
                 "speech_start_ms": start, "speech_end_ms": end}
     finally:
@@ -174,6 +194,9 @@ Voice metrics: {json.dumps(metrics)}
 - delivery_tip: one tip from the voice metrics.
 - improved_answer: a stronger version (4-6 sentences, first person) that keeps the candidate's own facts and uses
   placeholders like [number] for missing details. Keep it in English.
+- rubric: clarity, example_quality, structure and outcome, each 0-10 (for purely technical answers, judge example_quality
+  by the concreteness of the examples and outcome by whether the answer reaches a clear conclusion).
+- soft_skills: which of {", ".join(SOFT_SKILLS)} the answer shows real evidence of (empty list if none).
 - followup_question: {"one short probing follow-up a real interviewer would ask about something specific the candidate said (in English), or an empty string if the answer was complete" if allow_followup else "always an empty string"}.
 {pi._language_rule(lang)}"""
     res = pi._gemini_json(prompt, ANSWER_SCHEMA)
@@ -210,16 +233,28 @@ SUMMARY_SCHEMA = {
             "required": ["topic", "why", "how"]}},
         "next_steps": {"type": "array", "items": {"type": "string"}},
         "hiring_signal": {"type": "string", "enum": ["strong_yes", "yes", "maybe", "no"]},
+        "soft_skills": {"type": "array", "items": {"type": "object", "properties": {
+            "skill": {"type": "string", "enum": SOFT_SKILLS}, "score": {"type": "integer", "description": "0-10"},
+            "comment": {"type": "string", "description": "one sentence with evidence"}},
+            "required": ["skill", "score", "comment"]},
+            "description": "only the soft skills the interview gave evidence about"},
+        "nonverbal": {"type": "string", "description": "2-3 sentences on non-verbal behaviour from the camera metrics, or empty string if none"},
     },
     "required": ["headline", "executive_summary", "strengths", "weaknesses", "role_fit", "recommendations",
-                 "learning_plan", "next_steps", "hiring_signal"],
+                 "learning_plan", "next_steps", "hiring_signal", "soft_skills", "nonverbal"],
 }
 
 
 def summarize_session(role: str, level: str, lang: str, answers: List[Dict], voice: Dict,
-                      calibrated: Optional[Dict], for_recruiter: bool) -> Optional[Dict]:
+                      calibrated: Optional[Dict], for_recruiter: bool, camera: Optional[Dict] = None) -> Optional[Dict]:
     qa = "\n\n".join(f"[{i + 1}] Q: {a['question']}\nA: {a.get('transcript') or '(no answer)'}\n"
-                     f"Score: {a.get('score')}/10" for i, a in enumerate(answers))
+                     f"Score: {a.get('score')}/10; rubric: {json.dumps((a.get('feedback') or {}).get('rubric') or {})}"
+                     for i, a in enumerate(answers))
+    cam = ""
+    if camera:
+        cam = ("Camera metrics (computed on the candidate's device): " + json.dumps(
+            {k: camera.get(k) for k in ("face_visible", "eye_contact", "smile", "emotions", "dominant_emotion")}) +
+            "\nUse them only for the 'nonverbal' field, cautiously: expressions are not reliable signs of ability.")
     cal = ""
     if calibrated:
         cal = "Human-calibrated delivery scores (percentile vs 138 rated interviews): " + ", ".join(
@@ -234,9 +269,12 @@ Role: {role} ({LEVELS.get(level, level)}). {audience}
 - 3 bullets executive summary, 3-6 strengths, 3-6 weaknesses, 3 role-fit bullets, exactly 3 recommendations
   (one per category), a 3-5 item learning_plan of topics to study for this role, and 3-5 next_steps.
 - hiring_signal: your recommendation for a {LEVELS.get(level, level)} {role} position.
+- soft_skills: score 0-10 only those of {", ".join(SOFT_SKILLS)} the answers gave evidence about, each with evidence.
+- nonverbal: {"2-3 sentences from the camera metrics" if camera else "an empty string (no camera)"}.
 {pi._language_rule(lang)}
 Voice metrics: {json.dumps(vm)}
 {cal}
+{cam}
 
 Interview:
 {qa}

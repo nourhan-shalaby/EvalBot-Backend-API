@@ -25,6 +25,8 @@ export default function JobEditor() {
   const [skills, setSkills] = useState("");
   const [deadline, setDeadline] = useState("");
   const [visibility, setVisibility] = useState<Job["visibility"]>("public");
+  const [requireCamera, setRequireCamera] = useState(false);
+  const [recordVideo, setRecordVideo] = useState(false);
   const [busy, setBusy] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +38,7 @@ export default function JobEditor() {
       setSecs(j.answer_seconds); setStatus(j.status); setQs(j.questions.length ? j.questions : [{ text: "" }]);
       setLocation(j.location || ""); setWorkMode(j.work_mode); setEmpType(j.employment_type); setSalary(j.salary || "");
       setSkills((j.skills || []).join(", ")); setDeadline(j.deadline || ""); setVisibility(j.visibility);
+      setRequireCamera(!!j.require_camera); setRecordVideo(!!j.record_video);
       setLoaded(true);
     });
   }, [id]);
@@ -69,6 +72,7 @@ export default function JobEditor() {
         title, track, level, description: desc, answer_seconds: secs, status, questions: qs.filter((x) => x.text.trim()),
         location: location.trim() || null, work_mode: workMode, employment_type: empType, salary: salary.trim() || null,
         skills: skills.split(/[,،\n]/).map((x) => x.trim()).filter(Boolean), deadline: deadline || null, visibility,
+        require_camera: requireCamera || recordVideo, record_video: recordVideo,
       };
       const j = id ? await api.put<Job>(`/jobs/${id}`, body) : await api.post<Job>("/jobs", body);
       nav(`/app/jobs/${j.id}`);
@@ -120,6 +124,18 @@ export default function JobEditor() {
               ))}
             </div>
           </div>
+        </div>
+      </Panel>
+
+      <Panel title={t("job_interview")}>
+        <div className="grid gap-3 md:grid-cols-2">
+          {([[requireCamera || recordVideo, (v: boolean) => { setRequireCamera(v); if (!v) setRecordVideo(false); }, t("require_camera"), t("require_camera_d")],
+             [recordVideo, (v: boolean) => { setRecordVideo(v); if (v) setRequireCamera(true); }, t("record_video"), t("record_video_d")]] as const).map(([on, set, title, desc]) => (
+            <label key={title} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${on ? "border-nile bg-nile-soft" : "border-line hover:border-nile"}`}>
+              <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} className="mt-1 h-4 w-4 accent-[var(--color-nile)]" />
+              <span><span className="block font-medium text-ink">{title}</span><span className="mt-0.5 block text-sm text-muted">{desc}</span></span>
+            </label>
+          ))}
         </div>
       </Panel>
 

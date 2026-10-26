@@ -1,6 +1,6 @@
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Button, ErrorNote, Field, Input, Panel, Spinner, Textarea, Waveform, useCatalog } from "../components/ui";
 import { api, type Session } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -23,6 +23,8 @@ export default function NewInterview() {
   const [role, setRole] = useState("");
   const [cv, setCv] = useState("");
   const [jd, setJd] = useState("");
+  const [useCv, setUseCv] = useState(!!profile?.has_cv);
+  const [recordSelf, setRecordSelf] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +38,8 @@ export default function NewInterview() {
     setBusy(true);
     setError(null);
     try {
-      const s = await api.post<Session>("/sessions", { track, level, interview_type: itype, count, custom_role: role, cv_text: cv, jd_text: jd, language: fbLang });
+      const s = await api.post<Session>("/sessions", { track, level, interview_type: itype, count, custom_role: role, cv_text: useCv ? "" : cv, jd_text: jd, language: fbLang,
+        use_cv: useCv, record_video: recordSelf });
       nav(`/app/interview/${s.id}`);
     } catch (e: any) {
       setError(e.message);
@@ -118,7 +121,25 @@ export default function NewInterview() {
         <div className="grid gap-4 lg:grid-cols-3">
           <Field label={`${t("custom_role")} (${t("optional")})`}><Input value={role} onChange={(e) => setRole(e.target.value)} placeholder={t("custom_role_ph")} /></Field>
           <Field label={`${t("jd")} (${t("optional")})`}><Textarea value={jd} onChange={(e) => setJd(e.target.value)} placeholder={t("jd_ph")} /></Field>
-          <Field label={`${t("cv")} (${t("optional")})`}><Textarea value={cv} onChange={(e) => setCv(e.target.value)} placeholder={t("cv_ph")} /></Field>
+          {useCv ? (
+            <div>
+              <span className="mb-1.5 block text-sm font-medium text-ink">{t("cv")}</span>
+              <p className="rounded-xl border border-nile bg-nile-soft px-3.5 py-3 text-[15px] text-nile-deep">{t("use_my_cv")} ✓</p>
+              <button type="button" onClick={() => setUseCv(false)} className="mt-1.5 text-sm text-muted hover:text-ink">{t("cv_ph")}</button>
+            </div>
+          ) : (
+            <Field label={`${t("cv")} (${t("optional")})`}><Textarea value={cv} onChange={(e) => setCv(e.target.value)} placeholder={t("cv_ph")} /></Field>
+          )}
+        </div>
+        <div className="mt-4 flex flex-col gap-2 border-t border-line pt-4 sm:flex-row sm:flex-wrap sm:gap-6">
+          {profile?.has_cv && !useCv && (
+            <label className="flex items-center gap-2 text-[15px] text-ink"><input type="checkbox" checked={useCv} onChange={(e) => setUseCv(e.target.checked)} className="h-4 w-4 accent-[var(--color-nile)]" /> {t("use_my_cv")}</label>
+          )}
+          {!profile?.has_cv && <Link to="/app/cv" className="text-[15px] text-nile hover:underline">{t("cv_upload")}</Link>}
+          <label className="flex items-center gap-2 text-[15px] text-ink">
+            <input type="checkbox" checked={recordSelf} onChange={(e) => setRecordSelf(e.target.checked)} className="h-4 w-4 accent-[var(--color-nile)]" />
+            {t("record_self")} <span className="text-sm text-muted">({t("privacy_video")})</span>
+          </label>
         </div>
       </Panel>
 

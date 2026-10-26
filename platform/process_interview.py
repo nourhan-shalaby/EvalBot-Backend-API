@@ -1201,6 +1201,20 @@ def create_pdf_report(analysis: Dict, output_path: str, lang: str = "en") -> Non
         for x in cal["traits"]:
             rows.append([P(x["label"], "tdb"), P(f"{x['percentile']}%", "td"), P(f"r = {x['model_r']:.2f}", "td")])
         story += [rb.table(rows, [2.6 * inch, 2.2 * inch, W - 4.8 * inch]), Spacer(1, 0.1 * inch)]
+    # extra sections from the platform: camera analysis, integrity, soft skills, CV match
+    for sec in analysis.get("extra_sections") or []:
+        if sec.get("title"):
+            story.append(P(sec["title"], "h2"))
+        if sec.get("note"):
+            story.append(P(sec["note"], "small"))
+        if sec.get("rows"):
+            cols = len(sec["header"])
+            fr = sec.get("widths") or [1 / cols] * cols
+            rows = [[P(h, "th") for h in sec["header"]]] + [[P(str(c), "tdb" if i == 0 else "td") for i, c in enumerate(r)]
+                                                             for r in sec["rows"]]
+            story += [rb.table(rows, [W * f for f in fr]), Spacer(1, 0.1 * inch)]
+        for b in sec.get("bullets") or []:
+            story.append(P(b, "bullet"))
     story.append(PageBreak())
 
     # ---- Communication & vocal dynamics ------------------------------------------------

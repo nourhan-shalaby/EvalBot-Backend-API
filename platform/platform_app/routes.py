@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 import calibration as cal
 import process_interview as pi
-from . import ai
+from . import ai, insights
 from .core import current_user, dumps, get_file, public_config, put_file, q, q1, recruiter
 
 logger = logging.getLogger("evalbot.routes")
@@ -47,7 +47,7 @@ def catalog():
 JOB_PUBLIC_COLS = ("j.id, j.title, j.track, j.level, j.location, j.work_mode, j.employment_type, j.salary, j.skills, "
                    "j.deadline, j.share_token, j.created_at, j.answer_seconds, jsonb_array_length(j.questions) as question_count, "
                    "c.name as company, c.website, c.industry, c.size as company_size, c.about as company_about, "
-                   "c.location as company_location")
+                   "c.location as company_location, j.require_camera, j.record_video")
 ACCEPTING = "(j.status = 'open' and (j.deadline is null or j.deadline >= current_date))"
 
 
@@ -92,7 +92,8 @@ class ProfileIn(BaseModel):
 @router.get("/me")
 def me(user: Dict = Depends(current_user)):
     company = q1("select * from companies where id = %s", [user["company_id"]]) if user.get("company_id") else None
-    return {**user, "company": company}
+    out = {k: v for k, v in user.items() if k not in ("cv_text", "cv")}
+    return {**out, "company": company, "has_cv": bool(user.get("cv"))}
 
 
 @router.patch("/me")
@@ -105,6 +106,45 @@ def update_me(body: ProfileIn, user: Dict = Depends(current_user)):
         sets = ", ".join(f"{k} = %({k})s" for k in fields)
         q(f"update profiles set {sets} where id = %(id)s", {**fields, "id": user["id"]})
     return me(q1("select * from profiles where id = %s", [user["id"]]))
+
+
+# --------------------------------------------------------------------------------------
+# CV profile
+# --------------------------------------------------------------------------------------
+MAX_CV_MB = 5
+
+
+@router.get("/cv")
+def get_cv(user: Dict = Depends(current_user)):
+    return {"cv": user.get("cv"), "updated_at": user.get("cv_updated_at"), "has_text": bool(user.get("cv_text"))}
+
+
+@router.post("/cv")
+def upload_cv(file: UploadFile = File(...), user: Dict = Depends(current_user)):
+    data = file.file.read(MAX_CV_MB * 1024 * 1024 + 1)
+    if len(data) > MAX_CV_MB * 1024 * 1024:
+        raise HTTPException(413, "The CV file is larger than 5 MB")
+    name = (file.filename or "").lower()
+    if not name.endswith((".pdf", ".docx", ".txt")):
+        raise HTTPException(400, "Upload a PDF, Word (.docx) or text file")
+    try:
+        text = insights.cv_text_from_file(data, name)
+    except Exception:
+        raise HTTPException(400, "We couldn't read this file. Try exporting your CV as PDF again.")
+    if len(text) < 80:
+        raise HTTPException(400, "We couldn't find text in this file. If it's a scanned image, upload a text-based PDF or Word file.")
+    cv = insights.parse_cv(text)
+    if not cv:
+        raise HTTPException(503, "The CV reader is busy. Try again in a minute.")
+    q("update profiles set cv=%s, cv_text=%s, cv_updated_at=now(), "
+      "headline=coalesce(nullif(headline, ''), %s) where id=%s", [cv, text, (cv.get("headline") or "")[:160], user["id"]])
+    return {"cv": cv, "has_text": True}
+
+
+@router.delete("/cv")
+def delete_cv(user: Dict = Depends(current_user)):
+    q("update profiles set cv=null, cv_text=null, cv_updated_at=null where id=%s", [user["id"]])
+    return {"ok": True}
 
 
 class CompanyIn(BaseModel):
@@ -157,6 +197,8 @@ def generate(body: QuestionsIn, user: Dict = Depends(current_user)):
 class SessionIn(QuestionsIn):
     language: str = "en"
     questions: Optional[List[Dict]] = None
+    use_cv: bool = False
+    record_video: bool = False
 
 
 def _can_view(session: Dict, user: Dict) -> bool:
@@ -176,12 +218,15 @@ def _session(sid: str, user: Dict, owner_only: bool = False) -> Dict:
 
 @router.post("/sessions")
 def create_session(body: SessionIn, user: Dict = Depends(current_user)):
+    if body.use_cv and not body.cv_text.strip() and user.get("cv_text"):
+        body.cv_text = user["cv_text"]
     plan = body.questions or ai.generate_questions(body.track, body.level, body.interview_type, body.count,
                                                    body.custom_role, body.cv_text, body.jd_text)
     plan = [{"text": p["text"].strip()[:500], "kind": p.get("kind", "custom"), "skill": p.get("skill", ""),
              "rubric": p.get("rubric", "")} for p in plan if p.get("text", "").strip()]
     ctx = {"plan": plan, "role": ai.role_name(body.track, body.custom_role), "answer_seconds": 120,
-           "has_cv": bool(body.cv_text.strip()), "has_jd": bool(body.jd_text.strip()), "followups": 0}
+           "has_cv": bool(body.cv_text.strip()), "has_jd": bool(body.jd_text.strip()), "followups": 0,
+           "record_video": body.record_video}
     s = q1("insert into sessions (user_id, mode, track, level, interview_type, language, context) "
            "values (%s, 'mock', %s, %s, %s, %s, %s) returning *",
            [user["id"], body.track, body.level, body.interview_type, body.language if body.language in ("en", "ar") else "en", ctx])
@@ -207,7 +252,8 @@ def apply_job(token: str, body: ApplyIn, user: Dict = Depends(current_user)):
     plan = [{"text": x["text"], "kind": x.get("kind", "custom"), "skill": x.get("skill", ""),
              "rubric": x.get("rubric", "")} for x in j["questions"]]
     ctx = {"plan": plan, "role": j["title"], "answer_seconds": j["answer_seconds"], "followups": 0,
-           "job_title": j["title"], "no_followups": True}
+           "job_title": j["title"], "no_followups": True, "require_camera": bool(j.get("require_camera")),
+           "record_video": bool(j.get("record_video"))}
     return q1("insert into sessions (user_id, job_id, mode, track, level, interview_type, language, context) "
               "values (%s, %s, 'job', %s, %s, 'job', %s, %s) returning *",
               [user["id"], j["id"], j["track"], j["level"], body.language if body.language in ("en", "ar") else "en", ctx])
@@ -237,11 +283,14 @@ def my_applications(user: Dict = Depends(current_user)):
 def get_session(sid: str, user: Dict = Depends(current_user)):
     s = _session(sid, user)
     s["answers"] = q("select id, idx, question, kind, is_followup, duration_s, transcript, voice, presence, feedback, "
-                     "score, audio_path is not null as has_audio, created_at from answers where session_id=%s order by idx", [sid])
+                     "score, media, audio_path is not null as has_audio, created_at from answers where session_id=%s order by idx", [sid])
     if s.get("job_id"):
         s["job"] = q1("select j.title, c.name as company from jobs j join companies c on c.id=j.company_id where j.id=%s", [s["job_id"]])
     if s["user_id"] != user["id"]:
-        s["candidate"] = q1("select full_name, email, headline from profiles where id=%s", [s["user_id"]])
+        c = q1("select full_name, email, headline, cv, cv_text from profiles where id=%s", [s["user_id"]])
+        job = q1("select skills from jobs where id=%s", [s["job_id"]]) if s.get("job_id") else None
+        s["candidate"] = {"full_name": c["full_name"], "email": c["email"], "headline": c["headline"], "cv": c["cv"],
+                          "skill_match": insights.skill_match((job or {}).get("skills") or [], c["cv"], c["cv_text"] or "")}
     return s
 
 
@@ -303,15 +352,17 @@ def upload_answer(sid: str, idx: int = Form(...), file: UploadFile = File(...), 
     if len(blob) > MAX_AUDIO_MB * 1024 * 1024:
         raise HTTPException(413, "Recording is too large")
     suffix = os.path.splitext(file.filename or "")[1].lower() or ".webm"
+    media = "video" if (file.content_type or "").startswith("video/") else "audio"
     path = put_file(f"sessions/{sid}/answer_{idx}{suffix}", blob, file.content_type or "audio/webm")
     try:
         pres = json.loads(presence) if presence else None
     except ValueError:
         pres = None
-    q("insert into answers (session_id, idx, question, kind, is_followup, audio_path, presence) values (%s,%s,%s,%s,%s,%s,%s) "
+    q("insert into answers (session_id, idx, question, kind, is_followup, audio_path, presence, media) "
+      "values (%s,%s,%s,%s,%s,%s,%s,%s) "
       "on conflict (session_id, idx) do update set audio_path=excluded.audio_path, presence=excluded.presence, "
-      "transcript=null, feedback=null, score=null",
-      [sid, idx, plan[idx]["text"], plan[idx].get("kind"), bool(plan[idx].get("is_followup")), path, pres])
+      "media=excluded.media, transcript=null, feedback=null, score=null",
+      [sid, idx, plan[idx]["text"], plan[idx].get("kind"), bool(plan[idx].get("is_followup")), path, pres, media])
     _workers.submit(_process_answer, sid, idx, blob, suffix)
     return {"ok": True, "idx": idx}
 
@@ -319,11 +370,14 @@ def upload_answer(sid: str, idx: int = Form(...), file: UploadFile = File(...), 
 @router.get("/sessions/{sid}/answers/{idx}/audio")
 def answer_audio(sid: str, idx: int, user: Dict = Depends(current_user)):
     _session(sid, user)
-    a = q1("select audio_path from answers where session_id=%s and idx=%s", [sid, idx])
+    a = q1("select audio_path, media from answers where session_id=%s and idx=%s", [sid, idx])
     if not a or not a["audio_path"]:
         raise HTTPException(404)
     ext = os.path.splitext(a["audio_path"])[1].lstrip(".") or "webm"
-    mime = {"m4a": "audio/mp4", "mp4": "audio/mp4", "ogg": "audio/ogg", "mp3": "audio/mpeg", "wav": "audio/wav"}.get(ext, "audio/webm")
+    if a.get("media") == "video":
+        mime = "video/mp4" if ext in ("mp4", "m4a") else "video/webm"
+    else:
+        mime = {"m4a": "audio/mp4", "mp4": "audio/mp4", "ogg": "audio/ogg", "mp3": "audio/mpeg", "wav": "audio/wav"}.get(ext, "audio/webm")
     return Response(get_file(a["audio_path"]), media_type=mime)
 
 
@@ -366,9 +420,18 @@ def _finish(sid: str):
             delivery = pi.calculate_acceptance_probability(voice, None)
         overall = round(0.65 * content + 0.35 * delivery, 1) if content is not None and delivery is not None else (content or delivery)
 
-        summary = ai.summarize_session(role, s["level"] or "junior", lang, answers, voice, calibrated, s["mode"] == "job") or {}
+        camera = insights.camera_summary(answers)
+        integ = insights.integrity(answers, camera, bool(s["context"].get("require_camera")))
+        rubric = {}
+        for k in ("clarity", "example_quality", "structure", "outcome"):
+            vals = [(a.get("feedback") or {}).get("rubric", {}).get(k) for a in answers]
+            vals = [v for v in vals if isinstance(v, (int, float))]
+            rubric[k] = round(sum(vals) / len(vals), 1) if vals else None
+        summary = ai.summarize_session(role, s["level"] or "junior", lang, answers, voice, calibrated, s["mode"] == "job",
+                                       camera) or {}
         report = {"overall": overall, "content_score": content, "delivery_score": delivery, "calibrated": calibrated,
-                  "voice": voice, "summary": summary, "duration_s": round(y_dur, 1)}
+                  "voice": voice, "summary": summary, "duration_s": round(y_dur, 1), "camera": camera,
+                  "integrity": integ, "rubric": rubric}
 
         # PDF (reuses the interview report layout)
         pdf_path = None
@@ -381,6 +444,81 @@ def _finish(sid: str):
     except Exception as e:
         logger.exception("Finishing session failed")
         q("update sessions set status='failed', error=%s where id=%s", [str(e)[:500], sid])
+
+
+PDF_TXT = {
+    "en": {"cam": "Camera analysis", "cam_note": "Computed on the candidate's device; facial expressions are context, not a measure of ability.",
+           "metric": "Measure", "value": "Value", "eye": "Looking at the camera", "face": "Face in frame", "smile": "Smiling",
+           "emo": "Facial expressions (share of the interview)", "emotion": "Expression", "share": "Share",
+           "integ": "Interview integrity", "integ_note": "Automatic flags for human review, not proof of misconduct.",
+           "iscore": "Integrity score", "risk": "Review priority", "flag": "Flag", "count": "Times",
+           "soft": "Soft skills", "skill": "Skill", "score": "Score", "evidence": "Evidence",
+           "rubric": "Answer quality (average of all answers)", "nonverbal": "Non-verbal behaviour",
+           "low": "Low", "medium": "Medium", "high": "High", "none": "No flags were raised."},
+    "ar": {"cam": "تحليل الكاميرا", "cam_note": "محسوبة على جهاز المرشح؛ تعابير الوجه سياق وليست مقياساً للكفاءة.",
+           "metric": "المقياس", "value": "القيمة", "eye": "النظر إلى الكاميرا", "face": "ظهور الوجه", "smile": "الابتسام",
+           "emo": "تعابير الوجه (نسبتها من المقابلة)", "emotion": "التعبير", "share": "النسبة",
+           "integ": "نزاهة المقابلة", "integ_note": "تنبيهات آلية للمراجعة البشرية، وليست دليلاً على الغش.",
+           "iscore": "درجة النزاهة", "risk": "أولوية المراجعة", "flag": "التنبيه", "count": "عدد المرات",
+           "soft": "المهارات الشخصية", "skill": "المهارة", "score": "الدرجة", "evidence": "الدليل",
+           "rubric": "جودة الإجابات (متوسط كل الإجابات)", "nonverbal": "السلوك غير اللفظي",
+           "low": "منخفضة", "medium": "متوسطة", "high": "مرتفعة", "none": "لم تظهر أي تنبيهات."},
+}
+EMO_TXT = {"en": {"neutral": "Neutral", "happy": "Happy", "surprised": "Surprised", "sad": "Sad", "angry": "Angry",
+                  "fearful": "Fearful", "disgusted": "Disgusted"},
+           "ar": {"neutral": "محايد", "happy": "سعيد", "surprised": "مندهش", "sad": "حزين", "angry": "غاضب",
+                  "fearful": "خائف", "disgusted": "مشمئز"}}
+FLAG_TXT = {"en": {"multiple_faces": "More than one person in view", "second_voice": "Another voice in the answer",
+                   "voice_without_lips": "Voice heard while lips were still", "tab_hidden": "Left the interview tab",
+                   "reading_pattern": "Eye movement like reading", "looking_away": "Looked away for a while",
+                   "no_face": "Face left the camera", "fullscreen_exit": "Exited full screen"},
+            "ar": {"multiple_faces": "أكثر من شخص أمام الكاميرا", "second_voice": "صوت شخص آخر في الإجابة",
+                   "voice_without_lips": "صوت مسموع والشفاه لا تتحرك", "tab_hidden": "مغادرة صفحة المقابلة",
+                   "reading_pattern": "حركة عين تشبه القراءة", "looking_away": "النظر بعيداً لفترة",
+                   "no_face": "خروج الوجه من الكاميرا", "fullscreen_exit": "الخروج من ملء الشاشة"}}
+SOFT_TXT = {"en": {"communication": "Communication", "teamwork": "Teamwork", "conflict_resolution": "Conflict resolution",
+                   "time_management": "Time management", "adaptability": "Adaptability", "leadership": "Leadership",
+                   "problem_solving": "Problem solving", "emotional_intelligence": "Emotional intelligence",
+                   "clarity": "Clarity", "example_quality": "Example quality", "structure": "Structure", "outcome": "Outcome"},
+            "ar": {"communication": "التواصل", "teamwork": "العمل الجماعي", "conflict_resolution": "حل الخلافات",
+                   "time_management": "إدارة الوقت", "adaptability": "التكيّف", "leadership": "القيادة",
+                   "problem_solving": "حل المشكلات", "emotional_intelligence": "الذكاء العاطفي",
+                   "clarity": "الوضوح", "example_quality": "جودة الأمثلة", "structure": "التنظيم", "outcome": "النتيجة"}}
+
+
+def _pdf_sections(report: Dict, lang: str, for_recruiter: bool) -> List[Dict]:
+    L, E, F, S = PDF_TXT[lang], EMO_TXT[lang], FLAG_TXT[lang], SOFT_TXT[lang]
+    out = []
+    rub = report.get("rubric") or {}
+    if any(v is not None for v in rub.values()):
+        out.append({"title": L["rubric"], "header": [L["metric"], L["score"]], "widths": [0.6, 0.4],
+                    "rows": [[S[k], f"{v}/10"] for k, v in rub.items() if v is not None]})
+    soft = (report.get("summary") or {}).get("soft_skills") or []
+    if soft:
+        out.append({"title": L["soft"], "header": [L["skill"], L["score"], L["evidence"]], "widths": [0.25, 0.12, 0.63],
+                    "rows": [[S.get(x["skill"], x["skill"]), f"{x['score']}/10", x.get("comment", "")] for x in soft]})
+    cam = report.get("camera")
+    if cam:
+        rows = [[L["eye"], f"{round(100 * (cam.get('eye_contact') or 0))}%"], [L["face"], f"{round(100 * (cam.get('face_visible') or 0))}%"],
+                [L["smile"], f"{round(100 * (cam.get('smile') or 0))}%"]]
+        out.append({"title": L["cam"], "note": L["cam_note"], "header": [L["metric"], L["value"]], "widths": [0.6, 0.4], "rows": rows})
+        if cam.get("emotions"):
+            em = sorted(cam["emotions"].items(), key=lambda kv: -kv[1])
+            out.append({"title": L["emo"], "header": [L["emotion"], L["share"]], "widths": [0.6, 0.4],
+                        "rows": [[E.get(k, k), f"{round(100 * v)}%"] for k, v in em if v >= 0.01]})
+        nv = (report.get("summary") or {}).get("nonverbal")
+        if nv:
+            out.append({"title": L["nonverbal"], "bullets": [nv]})
+    integ = report.get("integrity")
+    if integ and (for_recruiter or integ.get("counts")):
+        rows = [[L["iscore"], f"{integ['score']}/100"], [L["risk"], L[integ["level"]]]]
+        out.append({"title": L["integ"], "note": L["integ_note"], "header": [L["metric"], L["value"]], "widths": [0.6, 0.4], "rows": rows})
+        if integ.get("counts"):
+            out.append({"title": "", "header": [L["flag"], L["count"]], "widths": [0.7, 0.3],
+                        "rows": [[F.get(k, k), n] for k, n in sorted(integ["counts"].items(), key=lambda kv: -kv[1])]})
+        else:
+            out.append({"title": "", "bullets": [L["none"]]})
+    return out
 
 
 def _build_pdf(sid: str, s: Dict, answers: List[Dict], report: Dict) -> str:
@@ -412,6 +550,7 @@ def _build_pdf(sid: str, s: Dict, answers: List[Dict], report: Dict) -> str:
         "suitability_score": report.get("overall") or 0,
         "verdict": summ.get("headline") or pi.verdict_for(report.get("overall") or 0, lang),
         "calibrated": report.get("calibrated"),
+        "extra_sections": _pdf_sections(report, lang, s["mode"] == "job"),
     }
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         out = tmp.name
@@ -484,6 +623,8 @@ class JobIn(BaseModel):
     skills: List[str] = Field(default_factory=list, max_length=20)
     deadline: Optional[date] = None
     visibility: str = "public"
+    require_camera: bool = False
+    record_video: bool = False
 
     def clean(self) -> Dict:
         d = self.model_dump()
@@ -493,11 +634,12 @@ class JobIn(BaseModel):
         d["visibility"] = "link" if d["visibility"] == "link" else "public"
         d["skills"] = [x.strip()[:40] for x in d["skills"] if x and x.strip()][:20]
         d["questions"] = _clean_questions(d["questions"])
+        d["require_camera"] = bool(d["require_camera"] or d["record_video"])  # a video interview needs the camera
         return d
 
 
 JOB_FIELDS = ["title", "track", "level", "description", "questions", "answer_seconds", "status", "location", "work_mode",
-              "employment_type", "salary", "skills", "deadline", "visibility"]
+              "employment_type", "salary", "skills", "deadline", "visibility", "require_camera", "record_video"]
 
 
 def _clean_questions(qs: List[Dict]) -> List[Dict]:
@@ -555,12 +697,18 @@ def delete_job(jid: str, user: Dict = Depends(recruiter)):
 @router.get("/jobs/{jid}/candidates")
 def job_candidates(jid: str, user: Dict = Depends(recruiter)):
     _job(jid, user)
-    return q("select s.id, s.status, s.overall_score, s.created_at, s.completed_at, "
+    rows = q("select s.id, s.status, s.overall_score, s.created_at, s.completed_at, "
              "s.report->>'content_score' as content_score, s.report->>'delivery_score' as delivery_score, "
              "s.report->'summary'->>'hiring_signal' as hiring_signal, s.report->'summary'->>'headline' as headline, "
-             "p.full_name, p.email, coalesce(r.status, 'new') as review_status, r.rating, r.notes "
+             "(s.report->'integrity'->>'score')::int as integrity_score, s.report->'integrity'->>'level' as integrity_level, "
+             "p.full_name, p.email, p.cv, p.cv_text, coalesce(r.status, 'new') as review_status, r.rating, r.notes "
              "from sessions s join profiles p on p.id=s.user_id left join reviews r on r.session_id=s.id "
              "where s.job_id=%s order by s.overall_score desc nulls last, s.created_at", [jid])
+    job_skills = (q1("select skills from jobs where id=%s", [jid]) or {}).get("skills") or []
+    for r in rows:
+        m = insights.skill_match(job_skills, r.pop("cv"), r.pop("cv_text") or "")
+        r["cv_match"] = m["percent"] if m else None
+    return rows
 
 
 class ReviewIn(BaseModel):
@@ -604,6 +752,7 @@ def _analytics(company_id: str, job_id: Optional[str], lang: str) -> Dict:
            f"count(*) filter (where r.status in ('shortlisted', 'hired')) as shortlisted, "
            f"count(*) filter (where r.status = 'hired') as hired, count(*) filter (where r.status = 'rejected') as rejected, "
            f"count(*) filter (where s.status = 'completed' and coalesce(r.status, 'new') = 'new') as to_review, "
+           f"count(*) filter (where s.report->'integrity'->>'level' in ('medium', 'high')) as flagged, "
            f"percentile_cont(0.5) within group (order by extract(epoch from (s.completed_at - s.created_at)) / 60) "
            f"filter (where s.status = 'completed' and s.completed_at - s.created_at between interval '0' and interval '1 day') as avg_minutes "
            f"from sessions s join jobs j on j.id = s.job_id left join reviews r on r.session_id = s.id where {F}", p)
@@ -642,6 +791,7 @@ def _analytics(company_id: str, job_id: Optional[str], lang: str) -> Dict:
     top = q(f"select s.id, s.overall_score, s.completed_at, s.report->>'content_score' as content_score, "
             f"s.report->>'delivery_score' as delivery_score, s.report->'summary'->>'hiring_signal' as hiring_signal, "
             f"s.report->'summary'->>'headline' as headline, p.full_name, p.email, p.headline as candidate_headline, "
+            f"s.report->'integrity'->>'level' as integrity_level, "
             f"j.id as job_id, j.title as job_title, coalesce(r.status, 'new') as review_status, r.rating "
             f"from sessions s join jobs j on j.id = s.job_id join profiles p on p.id = s.user_id "
             f"left join reviews r on r.session_id = s.id where {F} and s.status = 'completed' "
@@ -662,7 +812,7 @@ def _analytics(company_id: str, job_id: Optional[str], lang: str) -> Dict:
         "totals": {"jobs": jobs["jobs"], "open_jobs": jobs["open_jobs"], "views": views,
                    "applicants": applicants, "people": t["people"], "completed": t["completed"],
                    "in_progress": t["in_progress"], "shortlisted": t["shortlisted"], "hired": t["hired"],
-                   "rejected": t["rejected"], "to_review": t["to_review"],
+                   "rejected": t["rejected"], "to_review": t["to_review"], "flagged": t["flagged"],
                    "avg_score": _f(t["avg_score"]), "median_score": _f(t["median_score"]), "best_score": _f(t["best_score"]),
                    "completion_rate": round(100 * t["completed"] / applicants) if applicants else None,
                    "avg_minutes": _f(t["avg_minutes"])},
@@ -693,10 +843,12 @@ def job_candidates_csv(jid: str, user: Dict = Depends(recruiter)):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["rank", "name", "email", "interview_status", "overall_score", "content_score", "delivery_score",
-                "evalbot_signal", "decision", "rating", "notes", "applied_at", "report_url"])
+                "evalbot_signal", "integrity_score", "cv_skill_match_pct", "decision", "rating", "notes", "applied_at", "report_url"])
     for i, r in enumerate(rows, 1):
         w.writerow([i, r["full_name"] or "", r["email"] or "", r["status"], _f(r["overall_score"]) or "",
-                    r["content_score"] or "", r["delivery_score"] or "", r["hiring_signal"] or "", r["review_status"],
+                    r["content_score"] or "", r["delivery_score"] or "", r["hiring_signal"] or "",
+                    r["integrity_score"] if r["integrity_score"] is not None else "", r["cv_match"] if r["cv_match"] is not None else "",
+                    r["review_status"],
                     r["rating"] or "", (r["notes"] or "").replace("\n", " "), r["created_at"].strftime("%Y-%m-%d %H:%M"),
                     f"/app/report/{r['id']}"])
     name = "".join(ch if ch.isalnum() else "-" for ch in j["title"])[:40] or "job"

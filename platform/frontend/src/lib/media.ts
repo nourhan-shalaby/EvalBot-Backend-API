@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /* ---------------------------------------------------------------------------------------
  * Microphone recorder with live level meter (for the waveform)
  * ------------------------------------------------------------------------------------- */
-export type Recording = { blob: Blob; seconds: number; ext: string };
+export type Recording = { blob: Blob; seconds: number; ext: string; video: boolean };
 
 export function useRecorder(bars = 32) {
   const [state, setState] = useState<"idle" | "recording">("idle");
@@ -15,6 +15,9 @@ export function useRecorder(bars = 32) {
   const raf = useRef<number>(0);
   const started = useRef(0);
   const resolver = useRef<((r: Recording) => void) | null>(null);
+  const rms = useRef(0);
+  /** Current microphone level (0-1), for lip-sync checks. */
+  const level = useCallback(() => rms.current, []);
 
   const cleanup = useCallback(() => {
     cancelAnimationFrame(raf.current);
@@ -26,21 +29,32 @@ export function useRecorder(bars = 32) {
 
   useEffect(() => cleanup, [cleanup]);
 
-  const start = useCallback(async () => {
+  /** Start recording. Pass the camera stream to record a video answer (low bitrate, ~2-3 MB per minute). */
+  const start = useCallback(async (opts?: { video?: MediaStream | null }) => {
     const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     stream.current = s;
-    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find((m) => window.MediaRecorder?.isTypeSupported(m)) || "";
-    const r = new MediaRecorder(s, mime ? { mimeType: mime } : undefined);
+    const videoTracks = opts?.video?.getVideoTracks().filter((t) => t.readyState === "live") ?? [];
+    const withVideo = videoTracks.length > 0;
+    const recStream = withVideo ? new MediaStream([...videoTracks, ...s.getAudioTracks()]) : s;
+    const types = withVideo
+      ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4"]
+      : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+    const mime = types.find((m) => window.MediaRecorder?.isTypeSupported(m)) || "";
+    const r = new MediaRecorder(recStream, {
+      ...(mime ? { mimeType: mime } : {}),
+      ...(withVideo ? { videoBitsPerSecond: 350_000, audioBitsPerSecond: 64_000 } : {}),
+    });
     const chunks: Blob[] = [];
     r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     r.onstop = () => {
-      const type = r.mimeType || "audio/webm";
-      const ext = type.includes("mp4") ? ".m4a" : type.includes("ogg") ? ".ogg" : ".webm";
+      const type = r.mimeType || (withVideo ? "video/webm" : "audio/webm");
+      const ext = type.includes("mp4") ? (withVideo ? ".mp4" : ".m4a") : type.includes("ogg") ? ".ogg" : ".webm";
       const secs = (Date.now() - started.current) / 1000;
       cleanup();
+      rms.current = 0;
       setState("idle");
       setLevels(Array(bars).fill(0.08));
-      resolver.current?.({ blob: new Blob(chunks, { type }), seconds: secs, ext });
+      resolver.current?.({ blob: new Blob(chunks, { type }), seconds: secs, ext, video: withVideo });
     };
     // level meter
     const ac = new AudioContext();
@@ -55,10 +69,11 @@ export function useRecorder(bars = 32) {
       an.getByteTimeDomainData(buf);
       let sum = 0;
       for (const v of buf) sum += ((v - 128) / 128) ** 2;
-      const rms = Math.sqrt(sum / buf.length);
+      const level = Math.sqrt(sum / buf.length);
+      rms.current = level;
       if (ts - last > 70) {
         hist.shift();
-        hist.push(Math.min(1, 0.08 + rms * 4));
+        hist.push(Math.min(1, 0.08 + level * 4));
         setLevels([...hist]);
         setSeconds((Date.now() - started.current) / 1000);
         last = ts;
@@ -82,119 +97,7 @@ export function useRecorder(bars = 32) {
     [],
   );
 
-  return { state, levels, seconds, start, stop };
-}
-
-/* ---------------------------------------------------------------------------------------
- * Optional camera presence metrics, computed on-device with MediaPipe Face Landmarker.
- * Only aggregate numbers leave the browser.
- * ------------------------------------------------------------------------------------- */
-type Sample = { face: boolean; looking: boolean; smile: number; move: number };
-
-export function usePresence() {
-  const [enabled, setEnabled] = useState(false);
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const video = useRef<HTMLVideoElement | null>(null);
-  const stream = useRef<MediaStream | null>(null);
-  const landmarker = useRef<any>(null);
-  const samples = useRef<Sample[]>([]);
-  const collecting = useRef(false);
-  const timer = useRef<number>(0);
-  const prevNose = useRef<[number, number] | null>(null);
-
-  const stopCamera = useCallback(() => {
-    window.clearInterval(timer.current);
-    stream.current?.getTracks().forEach((t) => t.stop());
-    stream.current = null;
-    setReady(false);
-  }, []);
-
-  useEffect(() => stopCamera, [stopCamera]);
-
-  const enable = useCallback(async (el: HTMLVideoElement | null) => {
-    setError(null);
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
-      stream.current = s;
-      video.current = el;
-      if (el) {
-        el.srcObject = s;
-        await el.play().catch(() => undefined);
-      }
-      setEnabled(true);
-      if (!landmarker.current) {
-        const vision = await import("@mediapipe/tasks-vision");
-        const fileset = await vision.FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm");
-        landmarker.current = await vision.FaceLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numFaces: 1,
-          outputFaceBlendshapes: true,
-        });
-      }
-      timer.current = window.setInterval(() => {
-        const v = video.current;
-        if (!collecting.current || !v || v.readyState < 2 || !landmarker.current) return;
-        const res = landmarker.current.detectForVideo(v, performance.now());
-        const lm = res.faceLandmarks?.[0];
-        if (!lm) {
-          samples.current.push({ face: false, looking: false, smile: 0, move: 0 });
-          return;
-        }
-        const bs: Record<string, number> = {};
-        for (const c of res.faceBlendshapes?.[0]?.categories ?? []) bs[c.categoryName] = c.score;
-        // head yaw proxy: nose tip relative to the outer eye corners
-        const nose = lm[1], l = lm[33], r = lm[263];
-        const mid = (l.x + r.x) / 2;
-        const yaw = Math.abs(nose.x - mid) / Math.max(1e-3, Math.abs(r.x - l.x));
-        const gazeAway = Math.max(bs.eyeLookOutLeft ?? 0, bs.eyeLookOutRight ?? 0, bs.eyeLookInLeft ?? 0, bs.eyeLookInRight ?? 0,
-          bs.eyeLookUpLeft ?? 0, bs.eyeLookDownLeft ?? 0);
-        const looking = yaw < 0.12 && gazeAway < 0.55;
-        const smile = ((bs.mouthSmileLeft ?? 0) + (bs.mouthSmileRight ?? 0)) / 2;
-        const p: [number, number] = [nose.x, nose.y];
-        const move = prevNose.current ? Math.hypot(p[0] - prevNose.current[0], p[1] - prevNose.current[1]) : 0;
-        prevNose.current = p;
-        samples.current.push({ face: true, looking, smile, move });
-      }, 250);
-      setReady(true);
-    } catch {
-      setError("camera");
-      stopCamera();
-      setEnabled(false);
-    }
-  }, [stopCamera]);
-
-  const disable = useCallback(() => {
-    stopCamera();
-    setEnabled(false);
-  }, [stopCamera]);
-
-  const begin = useCallback(() => {
-    samples.current = [];
-    prevNose.current = null;
-    collecting.current = true;
-  }, []);
-
-  const end = useCallback((): Record<string, number> | null => {
-    collecting.current = false;
-    const s = samples.current;
-    if (!enabled || s.length < 4) return null;
-    const faces = s.filter((x) => x.face);
-    const n = Math.max(1, faces.length);
-    return {
-      face_visible: faces.length / s.length,
-      eye_contact: faces.filter((x) => x.looking).length / n,
-      smile: faces.reduce((a, x) => a + x.smile, 0) / n,
-      head_movement: faces.reduce((a, x) => a + x.move, 0) / n,
-      samples: s.length,
-    };
-  }, [enabled]);
-
-  return { enabled, ready, error, enable, disable, begin, end };
+  return { state, levels, seconds, start, stop, level };
 }
 
 /* ---------------------------------------------------------------------------------------

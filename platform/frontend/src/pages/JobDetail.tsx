@@ -103,13 +103,15 @@ export default function JobDetail() {
           <p className="py-6 text-center text-muted">{t("empty_candidates")}</p>
         ) : (
           <div className="-mx-5 overflow-x-auto sm:-mx-6">
-            <table className="w-full min-w-[640px] text-start text-[15px]">
+            <table className="w-full min-w-[820px] text-start text-[15px]">
               <thead>
                 <tr className="border-b border-line text-sm text-muted">
                   <th className="px-5 py-2 text-start font-medium sm:px-6">#</th>
                   <th className="py-2 text-start font-medium">{t("c_name")}</th>
                   <th className="py-2 text-start font-medium">{t("c_score")}</th>
                   <th className="py-2 text-start font-medium">{t("c_signal")}</th>
+                  <th className="py-2 text-start font-medium">{t("c_integrity")}</th>
+                  <th className="py-2 text-start font-medium">{t("c_cv")}</th>
                   <th className="py-2 text-start font-medium">{t("c_status")}</th>
                   <th className="px-5 py-2 text-start font-medium sm:px-6">{t("c_date")}</th>
                 </tr>
@@ -128,6 +130,9 @@ export default function JobDetail() {
                       ) : <StatusBadge status={r.status} />}
                     </td>
                     <td className="py-3">{r.hiring_signal && <Badge tone={sigTone(r.hiring_signal)}>{t(`sig_${r.hiring_signal}` as "sig_yes")}</Badge>}</td>
+                    <td className="py-3">{r.integrity_score != null && (
+                      <Badge tone={r.integrity_level === "low" ? "good" : r.integrity_level === "medium" ? "warn" : "bad"}>{r.integrity_score}</Badge>)}</td>
+                    <td className="py-3 tabular text-sm text-muted">{r.cv_match != null ? `${r.cv_match}%` : "–"}</td>
                     <td className="py-3"><Badge tone={rvTone[r.review_status]}>{t(`rv_${r.review_status}`)}</Badge></td>
                     <td className="px-5 py-3 text-sm text-muted sm:px-6">{fmtDate(r.created_at, lang)}</td>
                   </tr>

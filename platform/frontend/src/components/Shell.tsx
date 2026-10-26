@@ -1,4 +1,4 @@
-import { Briefcase, FileCheck2, History, LayoutDashboard, LogOut, Menu, Moon, Plus, Search, Settings, Sun, UploadCloud, X } from "lucide-react";
+import { Briefcase, FileCheck2, FileUser, History, LayoutDashboard, LogOut, Menu, Moon, Plus, Search, Settings, Sun, UploadCloud, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
@@ -63,6 +63,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         { to: "/app", icon: LayoutDashboard, label: t("nav_dashboard"), end: true },
         { to: "/app/board", icon: Search, label: t("nav_board") },
         { to: "/app/applications", icon: FileCheck2, label: t("nav_applications") },
+        { to: "/app/cv", icon: FileUser, label: t("nav_cv") },
         { to: "/app/new", icon: Plus, label: t("nav_new") },
         { to: "/app/history", icon: History, label: t("nav_history") },
       ];

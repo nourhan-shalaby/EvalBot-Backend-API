@@ -53,6 +53,7 @@ export type Profile = {
   target_track: string | null;
   locale: string;
   company?: Company | null;
+  has_cv?: boolean;
 };
 
 export type Company = { id: string; name: string; website?: string | null; about?: string | null; industry?: string | null; size?: string | null; location?: string | null };
@@ -73,7 +74,27 @@ export type Feedback = {
   followup_question?: string;
   skill?: string;
   error?: string;
+  rubric?: Rubric;
+  soft_skills?: string[];
 };
+
+export type Rubric = { clarity: number | null; example_quality: number | null; structure: number | null; outcome: number | null };
+export type EmotionProbs = Record<"neutral" | "happy" | "surprised" | "sad" | "angry" | "fearful" | "disgusted", number>;
+export type IntegrityEvent = { type: string; t: number; dur?: number | null; answer?: number };
+export type CameraInfo = {
+  samples: number; answers: number; face_visible: number | null; eye_contact: number | null; smile: number | null;
+  head_movement: number | null; emotions: EmotionProbs | null; dominant_emotion: keyof EmotionProbs | null;
+  timeline: { answer: number; t: number; dominant: keyof EmotionProbs; probs: EmotionProbs }[];
+};
+export type Integrity = { score: number; level: "low" | "medium" | "high"; counts: Record<string, number>; events: IntegrityEvent[];
+  notes: string[]; camera: boolean };
+export type CvProfile = {
+  name: string; headline: string; years_experience: number; skills: string[]; soft_skills: string[];
+  experience: { title: string; company: string; period: string; summary: string }[];
+  education: { degree: string; institution: string; year: string }[];
+  projects: { name: string; summary: string; tech: string[] }[]; certifications: string[]; languages: string[];
+};
+export type SkillMatch = { matched: string[]; missing: string[]; percent: number };
 
 export type Answer = {
   id: string;
@@ -84,10 +105,11 @@ export type Answer = {
   duration_s: number | null;
   transcript: string | null;
   voice: Record<string, any> | null;
-  presence: Record<string, number> | null;
+  presence: (Partial<CameraInfo> & { samples?: number; events?: IntegrityEvent[] }) | null;
   feedback: Feedback | null;
   score: number | null;
   has_audio: boolean;
+  media?: "audio" | "video";
 };
 
 export type Trait = { trait: string; label: string; score_1_7: number; percentile: number; model_r: number; human_r: number };
@@ -98,6 +120,9 @@ export type Report = {
   delivery_score: number | null;
   duration_s?: number;
   voice: Record<string, any>;
+  camera?: CameraInfo | null;
+  integrity?: Integrity | null;
+  rubric?: Rubric;
   calibrated: { traits: Trait[]; reference: { interviews: number; raters_per_interview: number } } | null;
   summary: {
     headline?: string;
@@ -109,6 +134,8 @@ export type Report = {
     learning_plan?: { topic: string; why: string; how: string }[];
     next_steps?: string[];
     hiring_signal?: "strong_yes" | "yes" | "maybe" | "no";
+    soft_skills?: { skill: string; score: number; comment: string }[];
+    nonverbal?: string;
   };
 };
 
@@ -130,7 +157,7 @@ export type Session = {
   completed_at: string | null;
   answers?: Answer[];
   job?: { title: string; company: string } | null;
-  candidate?: { full_name: string | null; email: string | null; headline: string | null };
+  candidate?: { full_name: string | null; email: string | null; headline: string | null; cv?: CvProfile | null; skill_match?: SkillMatch | null };
 };
 
 export type SessionRow = {
@@ -168,6 +195,8 @@ export type Job = {
   deadline: string | null;
   visibility: "public" | "link";
   views?: number;
+  require_camera: boolean;
+  record_video: boolean;
 };
 
 export type WorkMode = "onsite" | "remote" | "hybrid";
@@ -180,6 +209,7 @@ export type PublicJob = {
   created_at: string; answer_seconds: number; question_count: number; company: string; website: string | null;
   industry: string | null; company_size: string | null; company_about: string | null; company_location: string | null;
   snippet?: string; applicants?: number; description?: string | null; status?: string; accepting?: boolean;
+  require_camera?: boolean; record_video?: boolean;
 };
 
 export type Application = {
@@ -191,13 +221,13 @@ export type Application = {
 export type TopCandidate = {
   id: string; overall_score: number | null; completed_at: string; content_score: string | null; delivery_score: string | null;
   hiring_signal: string | null; headline: string | null; full_name: string | null; email: string | null;
-  candidate_headline: string | null; job_id: string; job_title: string; review_status: CandidateRow["review_status"]; rating: number | null;
+  candidate_headline: string | null; job_id: string; job_title: string; integrity_level?: Integrity["level"] | null; review_status: CandidateRow["review_status"]; rating: number | null;
 };
 
 export type HiringStats = {
   totals: {
     jobs: number; open_jobs: number; views: number; applicants: number; people: number; completed: number; in_progress: number;
-    shortlisted: number; hired: number; rejected: number; to_review: number; avg_score: number | null; median_score: number | null;
+    shortlisted: number; hired: number; rejected: number; to_review: number; flagged: number; avg_score: number | null; median_score: number | null;
     best_score: number | null; completion_rate: number | null; avg_minutes: number | null;
   };
   funnel: { stage: "views" | "started" | "completed" | "shortlisted" | "hired"; count: number }[];
@@ -225,4 +255,7 @@ export type CandidateRow = {
   review_status: "new" | "shortlisted" | "rejected" | "hired";
   rating: number | null;
   notes: string | null;
+  integrity_score?: number | null;
+  integrity_level?: Integrity["level"] | null;
+  cv_match?: number | null;
 };

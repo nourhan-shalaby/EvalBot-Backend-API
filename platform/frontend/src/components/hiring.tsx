@@ -30,7 +30,7 @@ export function KpiGrid({ s }: { s: HiringStats["totals"] }) {
       <Kpi label={t("k_avg")} value={s.avg_score != null ? Math.round(s.avg_score) : "–"}
         sub={s.median_score != null ? `${t("k_median")}: ${Math.round(s.median_score)} · ${t("k_best")}: ${Math.round(s.best_score ?? 0)}` : t("out_of_100")} />
       <Kpi label={t("k_to_review")} value={s.to_review} accent={s.to_review > 0}
-        sub={`${t("k_shortlisted")}: ${s.shortlisted} · ${t("k_hired")}: ${s.hired}`} />
+        sub={`${t("k_shortlisted")}: ${s.shortlisted} · ${t("k_hired")}: ${s.hired}${s.flagged ? ` · ${t("k_flagged")}: ${s.flagged}` : ""}`} />
     </div>
   );
 }
@@ -199,7 +199,12 @@ export function TopCandidates({ rows, showJob = true }: { rows: HiringStats["top
                   </td>
                   {showJob && <td className="py-3"><Link to={`/app/jobs/${r.job_id}`} onClick={(e) => e.stopPropagation()} className="text-sm text-ink hover:text-nile">{r.job_title}</Link></td>}
                   <td className="py-3"><span className="font-display text-lg font-semibold tabular" style={{ color: scoreColor(r.overall_score) }}>{r.overall_score != null ? Math.round(r.overall_score) : "–"}</span></td>
-                  <td className="py-3">{r.hiring_signal && <Badge tone={signalTone(r.hiring_signal)}>{t(`sig_${r.hiring_signal}` as "sig_yes")}</Badge>}</td>
+                  <td className="py-3">
+                    <span className="flex flex-wrap gap-1">
+                      {r.hiring_signal && <Badge tone={signalTone(r.hiring_signal)}>{t(`sig_${r.hiring_signal}` as "sig_yes")}</Badge>}
+                      {(r.integrity_level === "medium" || r.integrity_level === "high") && <Badge tone={r.integrity_level === "high" ? "bad" : "warn"}>{t("c_integrity")}</Badge>}
+                    </span>
+                  </td>
                   <td className="px-5 py-3 sm:px-6"><Badge tone={reviewTone[r.review_status]}>{t(`rv_${r.review_status}`)}</Badge></td>
                 </tr>
               ))}
