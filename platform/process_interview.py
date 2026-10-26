@@ -799,6 +799,9 @@ LABELS = {
         "ai_unavailable": "Note: AI content evaluation was unavailable for this run, so sections that depend on it were omitted.",
         "chart_vocal": "Vocal dynamics (0 = low, 1 = high)", "chart_talk": "Talk time",
         "chart_q": "Score per question (0-10)",
+        "cal_title": "How a panel of interviewers would likely rate the candidate",
+        "cal_note": "Percent of {n} real interviews (each rated by nine people) that this candidate would score above. Reliability r is the model's agreement with the panel on people it never saw; a single human rater reaches about {h}.",
+        "cal_trait": "Trait", "cal_pct": "Better than", "cal_rel": "Reliability",
         "high": "High", "moderate": "Moderate", "low": "Low", "fluent": "Fluent", "disfluent": "Disfluent",
         "Communication Skills": "Communication Skills", "Content Delivery": "Content Delivery",
         "Professional Presentation": "Professional Presentation",
@@ -839,6 +842,9 @@ LABELS = {
         "ai_unavailable": "ملاحظة: لم يكن تقييم المحتوى بالذكاء الاصطناعي متاحاً، فتم حذف الأقسام المعتمدة عليه.",
         "chart_vocal": "الأداء الصوتي (0 = منخفض، 1 = مرتفع)", "chart_talk": "توزيع وقت الكلام",
         "chart_q": "درجة كل سؤال (من 10)",
+        "cal_title": "كيف ستقيّم لجنة من المحاورين المرشّح على الأرجح",
+        "cal_note": "النسبة المئوية من {n} مقابلة حقيقية (قيّم كلاً منها تسعة أشخاص) التي يتفوق عليها المرشّح. ومعامل الموثوقية r هو مدى اتفاق النموذج مع اللجنة على أشخاص لم يرهم، ومقيّم بشري واحد يحقق نحو {h}.",
+        "cal_trait": "السمة", "cal_pct": "أفضل من", "cal_rel": "الموثوقية",
         "high": "مرتفع", "moderate": "متوسط", "low": "منخفض", "fluent": "طليق", "disfluent": "متقطع",
         "Communication Skills": "مهارات التواصل", "Content Delivery": "تقديم المحتوى",
         "Professional Presentation": "الحضور المهني",
@@ -1185,6 +1191,16 @@ def create_pdf_report(analysis: Dict, output_path: str, lang: str = "en") -> Non
     story += [rb.table(rows, [2.3 * inch, W - 2.3 * inch]), Spacer(1, 0.2 * inch)]
     story.append(P(T("exec_summary"), "h1"))
     bullets(ev.get("executive_summary", []))
+
+    cal = analysis.get("calibrated")
+    if cal and cal.get("traits"):
+        story.append(P(T("cal_title"), "h2"))
+        h = next((x["human_r"] for x in cal["traits"] if x["trait"] == "Overall"), 0.5)
+        story.append(P(T("cal_note").format(n=cal["reference"]["interviews"], h=f"{h:.2f}"), "small"))
+        rows = [[P(T("cal_trait"), "th"), P(T("cal_pct"), "th"), P(T("cal_rel"), "th")]]
+        for x in cal["traits"]:
+            rows.append([P(x["label"], "tdb"), P(f"{x['percentile']}%", "td"), P(f"r = {x['model_r']:.2f}", "td")])
+        story += [rb.table(rows, [2.6 * inch, 2.2 * inch, W - 4.8 * inch]), Spacer(1, 0.1 * inch)]
     story.append(PageBreak())
 
     # ---- Communication & vocal dynamics ------------------------------------------------
@@ -1314,6 +1330,18 @@ def convert_to_serializable(obj):
     return obj
 
 
+def _calibrated(y, sr, utterances, lang):
+    """Human-calibrated trait scores (see calibration.py); None if the model isn't available."""
+    try:
+        import calibration
+
+        texts = [u["text"] for u in utterances if u["role"] == "Interviewee"]
+        return calibration.predict(calibration.extract_features(y, sr, utterances, texts), lang)
+    except Exception as e:
+        logger.warning("Calibrated scoring unavailable: %s", e)
+        return None
+
+
 def process_interview(audio_path: str, user_id: str = "candidate", output_dir: str = OUTPUT_DIR,
                       progress=None, lang: str = "en") -> Dict:
     """Run the full pipeline. Returns paths to the PDF and JSON reports plus a short summary."""
@@ -1363,6 +1391,7 @@ def process_interview(audio_path: str, user_id: str = "candidate", output_dir: s
                           "language": transcript.get("language_code", "en")},
             "speakers": speakers, "voice_analysis": voice, "transcript": clean_utts,
             "qa_pairs": build_qa_pairs(clean_utts),
+            "calibrated": _calibrated(y, sr, clean_utts, lang),
             "models": {
                 "transcription": "AssemblyAI universal-2",
                 "speaker_embeddings": "nvidia/speakerverification_en_titanet_large",

@@ -26,3 +26,6 @@ python-multipart
 requests
 arabic-reshaper
 python-bidi
+psycopg[binary]>=3.2
+psycopg-pool
+httpx
