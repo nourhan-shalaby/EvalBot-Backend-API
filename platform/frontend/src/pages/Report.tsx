@@ -1,23 +1,11 @@
-import { ChevronDown, Download, Play, Star } from "lucide-react";
+import { AlertTriangle, ChevronDown, Download, Star } from "lucide-react";
+import { AnswerMedia, CameraPanel, CvView, IntegrityPanel, SkillsPanel } from "../components/insights";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Badge, Button, ErrorNote, Field, Meter, Panel, ScoreRing, Spinner, Textarea, Waveform, fmtDate, scoreColor, useCatalog } from "../components/ui";
 import { api, type Answer, type Session } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { trackName, useI18n } from "../lib/i18n";
-
-function AnswerAudio({ sid, idx }: { sid: string; idx: number }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
-  if (url) return <audio src={url} controls autoPlay className="h-10 w-full" />;
-  return (
-    <button onClick={async () => { setBusy(true); try { setUrl(URL.createObjectURL(await api.blob(`/sessions/${sid}/answers/${idx}/audio`))); } finally { setBusy(false); } }}
-      className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-1.5 text-sm text-ink hover:border-nile hover:text-nile" disabled={busy}>
-      <Play size={14} /> {busy ? "…" : "Play"}
-    </button>
-  );
-}
 
 function QuestionCard({ a, sid, open: initial, lang }: { a: Answer; sid: string; open: boolean; lang: string }) {
   const { t } = useI18n();
@@ -38,10 +26,11 @@ function QuestionCard({ a, sid, open: initial, lang }: { a: Answer; sid: string;
       </button>
       {open && (
         <div className="space-y-3 border-t border-line p-4 sm:p-5">
+          {a.has_audio && a.media === "video" && <AnswerMedia sid={sid} idx={a.idx} video />}
           <div className="rounded-xl bg-sunken p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-medium text-muted">{t("your_answer")}</span>
-              {a.has_audio && <AnswerAudio sid={sid} idx={a.idx} />}
+              {a.has_audio && a.media !== "video" && <AnswerMedia sid={sid} idx={a.idx} />}
             </div>
             <p className="ltr text-[15px] text-ink" dir="ltr">{a.transcript || t("not_answered")}</p>
           </div>
@@ -63,11 +52,16 @@ function QuestionCard({ a, sid, open: initial, lang }: { a: Answer; sid: string;
           <div className="flex flex-wrap gap-2 text-sm text-muted">
             {fb.delivery_tip && <span dir={dir}><span className="font-medium text-ink">{t("delivery_tip")}: </span>{fb.delivery_tip}</span>}
           </div>
-          {p && (
+          {(fb.rubric || (p && p.samples)) && (
             <div className="flex flex-wrap gap-2">
-              <Badge>{t("eye_contact")}: {Math.round((p.eye_contact ?? 0) * 100)}%</Badge>
-              <Badge>{t("smile")}: {Math.round((p.smile ?? 0) * 100)}%</Badge>
-              <Badge>{t("face_visible")}: {Math.round((p.face_visible ?? 0) * 100)}%</Badge>
+              {fb.rubric && (["clarity", "example_quality", "structure", "outcome"] as const).map((k) =>
+                fb.rubric![k] != null && <Badge key={k}>{t(`rb_${k}`)}: {fb.rubric![k]}/10</Badge>)}
+              {!!p?.samples && <Badge>{t("eye_contact")}: {Math.round((p.eye_contact ?? 0) * 100)}%</Badge>}
+              {!!p?.samples && p.emotions && (() => {
+                const top = (Object.entries(p.emotions) as [string, number][]).sort((x, y) => y[1] - x[1])[0];
+                return <Badge tone="info">{t(`emo_${top[0]}` as "emo_happy")} {Math.round(top[1] * 100)}%</Badge>;
+              })()}
+              {!!p?.events?.length && <Badge tone="warn"><AlertTriangle size={12} /> {p.events.length}</Badge>}
             </div>
           )}
         </div>
@@ -219,6 +213,18 @@ export default function ReportPage() {
             ))}
           </ul>
         </Panel>
+      )}
+
+      <SkillsPanel r={r} dir={dir} />
+
+      {r.camera && <CameraPanel cam={r.camera} nonverbal={sum.nonverbal} self={!isReviewer} dir={dir} />}
+
+      {r.integrity && (isReviewer || s.mode === "job" || r.integrity.camera || Object.keys(r.integrity.counts).length > 0) && (
+        <IntegrityPanel integ={r.integrity} self={!isReviewer && s.mode !== "job"} />
+      )}
+
+      {isReviewer && s.candidate?.cv && (
+        <Panel title={t("cv_profile")}><CvView cv={s.candidate.cv} match={s.candidate.skill_match} /></Panel>
       )}
 
       {/* voice */}

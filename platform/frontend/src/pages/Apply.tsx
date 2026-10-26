@@ -1,4 +1,4 @@
-import { ArrowLeft, Clock, Globe, ListChecks, Mic } from "lucide-react";
+import { ArrowLeft, Clock, Globe, ListChecks, Mic, ShieldCheck, Video } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { CompanyMark, JobFacts, Skills } from "../components/jobs";
@@ -75,6 +75,8 @@ export default function Apply() {
             <li className="flex items-center gap-3"><ListChecks size={18} className="text-nile" /> {t("apply_q", { n: job.question_count })}</li>
             <li className="flex items-center gap-3"><Clock size={18} className="text-nile" /> {t("apply_time", { m: Math.round(job.answer_seconds / 60) })}</li>
             <li className="flex items-start gap-3"><Mic size={18} className="mt-0.5 flex-none text-nile" /> {t("apply_how")}</li>
+            {job.require_camera && <li className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 flex-none text-nile" /> {t("apply_camera")}</li>}
+            {job.record_video && <li className="flex items-start gap-3"><Video size={18} className="mt-0.5 flex-none text-nile" /> {t("apply_video")}</li>}
           </ul>
           <div className="mt-6">{action()}</div>
           {error && <div className="mt-4"><ErrorNote>{error}</ErrorNote></div>}

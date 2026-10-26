@@ -26,7 +26,9 @@ English and Arabic throughout, including right-to-left PDF reports.
 - **A real conversation.** Questions are read aloud, you answer out loud, and EvalBot asks follow-up questions when an answer leaves something open.
 - **Feedback you can act on.** Each answer gets a 0-10 score, what went well, what to improve, a delivery tip, and a stronger version of your answer built from your own facts.
 - **Human-calibrated delivery scores** for 13 traits (overall impression, hiring recommendation, enthusiasm, engaging tone, structure, filler words, calmness and more), shown as your position among the 138 rated interviews.
-- **Optional camera presence** (eye contact, smiling, face in frame), computed on-device with MediaPipe. Only the numbers leave the browser, never the video.
+- **Camera analysis, on the device:** facial expressions in 7 classes (neutral, happy, surprised, sad, angry, fearful, disgusted) with confidence, smoothed over time and shown as a timeline in 5-second segments; eye contact from iris position and head pose; smiling and face-in-frame. Only numbers leave the browser unless a video interview was requested.
+- **Soft skills and answer quality:** every answer is scored for clarity, example quality, structure and outcome, and the interview is scored on the eight soft skills it gives evidence for (communication, teamwork, conflict resolution, time management, adaptability, leadership, problem solving, emotional intelligence).
+- **CV profile:** upload a PDF or Word CV once; skills, experience, education, projects, certifications and languages are extracted and used to tailor practice questions.
 - **Progress tracking:** score history, skill breakdown, and a learning plan for your track.
 
 - **A job board:** browse open roles from companies on the platform (search, track, level, on-site/remote/hybrid, job type), apply with one spoken interview, and follow each application's status.
@@ -38,7 +40,9 @@ English and Arabic throughout, including right-to-left PDF reports.
 - A **hiring dashboard**: applicants, completion rate, average and median score, a 30-day applications chart, the hiring funnel (viewed → started → completed → shortlisted → hired), score distribution, EvalBot hiring signals, the **top 10 candidates** across all jobs, the candidate pool's delivery profile and skill averages, and a per-job table. Each job has the same analytics plus search, a minimum-score filter and **CSV export**.
 - Every applicant answers the **same questions with the same time limit**, whenever it suits them.
 - A **ranked candidate list** with scores, a hiring signal, the written assessment, recordings and transcripts.
-- Shortlist, reject, rate and add notes. **People make the decision**; EvalBot informs it.
+- **Monitored and video interviews (optional per job):** a camera-required interview flags moments for review, each with its time: looking away (iris offset over 0.2 or head turned over 15°), face out of frame, more than one person, a voice heard while the lips are still, another voice in the recording, reading-like eye movement, leaving the tab or full screen. These become an explainable **integrity score** with a review priority. Video answers can be recorded for the hiring team to watch.
+- **CV match:** the candidate's CV profile next to the interview, with the share of the job's skills it covers.
+- Shortlist, reject, rate and add notes. **People make the decision**; EvalBot informs it, and integrity flags are prompts for review, not verdicts.
 
 ---
 

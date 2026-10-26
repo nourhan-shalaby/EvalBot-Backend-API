@@ -1,10 +1,11 @@
-import { Camera, CameraOff, Mic, Square, Volume2 } from "lucide-react";
+import { Camera, CameraOff, Eye, EyeOff, Mic, ShieldCheck, Square, Users, Video, Volume2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button, ErrorNote, Logo, Spinner, Waveform } from "../components/ui";
 import { api, type Session } from "../lib/api";
 import { useI18n } from "../lib/i18n";
-import { fmtClock, speak, stopSpeaking, usePresence, useRecorder, type Recording } from "../lib/media";
+import { fmtClock, speak, stopSpeaking, useRecorder, type Recording } from "../lib/media";
+import { useVision } from "../lib/vision";
 
 type Next = { done: boolean; idx?: number; total: number; question?: string; kind?: string; is_followup?: boolean; answer_seconds?: number };
 type Phase = "loading" | "asking" | "ready" | "recording" | "review_short" | "saving" | "waiting_followup" | "done" | "finishing";
@@ -14,7 +15,7 @@ export default function InterviewRoom() {
   const { t } = useI18n();
   const nav = useNavigate();
   const rec = useRecorder(36);
-  const presence = usePresence();
+  const presence = useVision(rec.level);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [next, setNext] = useState<Next | null>(null);
@@ -23,6 +24,10 @@ export default function InterviewRoom() {
   const [saved, setSaved] = useState(0);
   const pending = useRef<Recording | null>(null);
   const autoStop = useRef<number>(0);
+
+  const needsCamera = !!(session?.context as any)?.require_camera || !!(session?.context as any)?.record_video;
+  const recordVideo = !!(session?.context as any)?.record_video;
+  const proctored = session?.mode === "job" && !!(session?.context as any)?.require_camera;
 
   const ask = useCallback((n: Next) => {
     setNext(n);
@@ -69,7 +74,7 @@ export default function InterviewRoom() {
     form.append("idx", String(next.idx));
     form.append("file", r.blob, `answer${r.ext}`);
     const p = presence.end();
-    if (p) form.append("presence", JSON.stringify(p));
+    if (p.samples > 0 || p.events.length) form.append("presence", JSON.stringify(p));
     try {
       await api.upload(`/sessions/${id}/answers`, form);
       setSaved((x) => x + 1);
@@ -83,9 +88,14 @@ export default function InterviewRoom() {
   const startAnswer = async () => {
     stopSpeaking();
     setError(null);
+    if (needsCamera && !presence.ready) {
+      setError(t("cam_required_body"));
+      return;
+    }
+    if (proctored && !document.fullscreenElement) await document.documentElement.requestFullscreen?.().catch(() => undefined);
     try {
-      await rec.start();
-      presence.begin();
+      await rec.start({ video: recordVideo && presence.enabled ? presence.stream.current : null });
+      presence.begin({ fullscreen: proctored && !!document.fullscreenElement });
       setPhase("recording");
       const limit = (next?.answer_seconds ?? session?.context.answer_seconds ?? 120) * 1000;
       window.clearTimeout(autoStop.current);
@@ -109,6 +119,8 @@ export default function InterviewRoom() {
   const finish = async () => {
     setPhase("finishing");
     stopSpeaking();
+    presence.disable();
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => undefined);
     try {
       await api.post(`/sessions/${id}/finish`);
       nav(`/app/report/${id}`, { replace: true });
@@ -119,6 +131,8 @@ export default function InterviewRoom() {
   };
 
   if (!session && !error) return <Spinner />;
+  const isJob = session?.mode === "job";
+  const live = presence.live;
   const limit = next?.answer_seconds ?? session?.context.answer_seconds ?? 120;
   const total = next?.total ?? session?.context.plan.length ?? 0;
   const qNumber = (next?.idx ?? 0) + 1;
@@ -201,7 +215,10 @@ export default function InterviewRoom() {
                     ) : (
                       <>
                         <p className="text-sm text-muted">{t("get_ready")}</p>
-                        <Button size="lg" onClick={startAnswer} disabled={phase === "loading"}><Mic size={18} /> {t("start_answer")}</Button>
+                        <Button size="lg" onClick={startAnswer} disabled={phase === "loading" || (needsCamera && !presence.ready)}>
+                          {recordVideo ? <Video size={18} /> : <Mic size={18} />} {t("start_answer")}
+                        </Button>
+                        {needsCamera && !presence.ready && <p className="max-w-sm text-center text-sm text-muted">{t("cam_required_body")}</p>}
                       </>
                     )}
                   </div>
@@ -216,12 +233,40 @@ export default function InterviewRoom() {
           <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-line bg-sunken">
             <video ref={videoRef} muted playsInline className={`h-full w-full scale-x-[-1] object-cover ${presence.enabled ? "" : "hidden"}`} />
             {!presence.enabled && <div className="flex h-full items-center justify-center text-muted"><CameraOff size={28} /></div>}
+            {presence.enabled && phase === "recording" && recordVideo && (
+              <span className="absolute start-2 top-2 flex items-center gap-1.5 rounded-full bg-danger px-2 py-0.5 text-xs font-medium text-white">
+                <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-white" /> REC
+              </span>
+            )}
+            {presence.ready && (
+              <div className="absolute inset-x-2 bottom-2 flex flex-wrap gap-1.5">
+                {live.faces > 1 && <span className="flex items-center gap-1 rounded-full bg-danger px-2 py-0.5 text-xs text-white"><Users size={12} /> {t("live_faces")}</span>}
+                {live.faces === 0 && <span className="rounded-full bg-amber px-2 py-0.5 text-xs text-ink">{t("live_noface")}</span>}
+                {live.faces === 1 && (
+                  <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${live.looking ? "bg-nile text-white" : "bg-amber text-ink"}`}>
+                    {live.looking ? <Eye size={12} /> : <EyeOff size={12} />} {live.looking ? t("live_looking") : t("live_away")}
+                  </span>
+                )}
+                {!isJob && live.emotion && live.faces === 1 && (
+                  <span className="rounded-full bg-ink/75 px-2 py-0.5 text-xs text-white">{t(`emo_${live.emotion}` as "emo_happy")} {Math.round(live.confidence * 100)}%</span>
+                )}
+              </div>
+            )}
           </div>
           <Button variant="outline" className="w-full" onClick={() => (presence.enabled ? presence.disable() : presence.enable(videoRef.current))}
-            disabled={phase === "recording"}>
+            disabled={phase === "recording" || (needsCamera && presence.enabled)}>
             {presence.enabled ? <><CameraOff size={16} /> {t("camera_off")}</> : <><Camera size={16} /> {t("camera_on")}</>}
           </Button>
-          <p className="text-xs text-muted">{t("camera_hint")}</p>
+          {presence.error && <p className="text-xs text-danger">{t("cam_error")}</p>}
+          {needsCamera ? (
+            <div className="space-y-2 rounded-xl border border-line bg-surface p-3 text-xs text-muted">
+              <p className="flex items-center gap-1.5 font-medium text-ink"><ShieldCheck size={14} className="text-nile" /> {t("proctor_title")}</p>
+              <p>{t("proctor_body")}</p>
+              {recordVideo && <p className="font-medium text-ink">{t("video_notice")}</p>}
+            </div>
+          ) : (
+            <p className="text-xs text-muted">{t("camera_hint")}</p>
+          )}
         </aside>
       </main>
     </div>

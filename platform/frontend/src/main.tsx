@@ -9,6 +9,7 @@ import { I18nProvider } from "./lib/i18n";
 import Applications from "./pages/Applications";
 import Apply from "./pages/Apply";
 import Board from "./pages/Board";
+import CvPage from "./pages/Cv";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
@@ -64,6 +65,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/app/history" element={<Private role="candidate"><History /></Private>} />
             <Route path="/app/board" element={<Private role="candidate"><Board inApp /></Private>} />
             <Route path="/app/applications" element={<Private role="candidate"><Applications /></Private>} />
+            <Route path="/app/cv" element={<Private role="candidate"><CvPage /></Private>} />
             <Route path="/app/interview/:id" element={<Private bare><InterviewRoom /></Private>} />
             <Route path="/app/report/:id" element={<Private><ReportPage /></Private>} />
             <Route path="/app/settings" element={<Private><SettingsPage /></Private>} />
