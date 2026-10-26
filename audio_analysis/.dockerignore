@@ -1,0 +1,6 @@
+.git
+__pycache__
+processed_audio
+temp_files
+static/outputs
+models

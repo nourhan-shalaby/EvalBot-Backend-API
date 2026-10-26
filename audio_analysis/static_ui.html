@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EvalBot · Interview Analysis</title>
+<style>
+  :root { --bg:#f5f7fb; --card:#fff; --ink:#152033; --muted:#5b6573; --brand:#0b3d91; --accent:#1f6feb; --line:#dde4ee;
+          --good:#2e7d32; --mid:#ef6c00; --bad:#c62828; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { margin:0 0 4px; font-size: 28px; color: var(--brand); }
+  .lead { color: var(--muted); margin: 0 0 24px; line-height: 1.5; }
+  .card { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px; text-align:center; cursor:pointer; transition: .15s; }
+  .drop.over, .drop:hover { border-color: var(--accent); background: #f0f6ff; }
+  .drop strong { color: var(--accent); }
+  input[type=text] { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:15px; margin-top:6px; }
+  label { font-size: 14px; color: var(--muted); }
+  button { background: var(--accent); color:#fff; border:0; border-radius:8px; padding: 12px 18px; font-size:15px; font-weight:600; cursor:pointer; width:100%; margin-top:14px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .steps { list-style:none; padding:0; margin: 8px 0 0; }
+  .steps li { padding: 6px 0; color: var(--muted); display:flex; gap:10px; align-items:center; }
+  .steps li.done { color: var(--ink); } .steps li.done::before { content:"✓"; color: var(--good); font-weight:700; }
+  .steps li.active { color: var(--ink); font-weight:600; } .steps li.active::before { content:"●"; color: var(--accent); animation: pulse 1s infinite; }
+  .steps li.todo::before { content:"○"; }
+  @keyframes pulse { 50% { opacity:.3 } }
+  .score { display:flex; gap:20px; align-items:center; }
+  .score .num { font-size: 48px; font-weight: 800; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .chip { background: var(--bg); border:1px solid var(--line); border-radius:999px; padding:4px 12px; font-size:13px; }
+  .links { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+  .links a { flex:1; text-align:center; text-decoration:none; padding:10px; border-radius:8px; border:1px solid var(--accent); color:var(--accent); font-weight:600; min-width: 140px; }
+  .links a.primary { background: var(--accent); color:#fff; }
+  ul.summary { padding-left: 18px; line-height:1.55; }
+  .err { color: var(--bad); white-space: pre-wrap; }
+  .hidden { display:none; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 24px; line-height: 1.6; }
+  code { background:#eef2f8; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>EvalBot</h1>
+  <p class="lead">Upload a recorded job interview (English). EvalBot transcribes it, tells the interviewer and candidate apart,
+    analyzes the candidate's voice, and generates a full PDF evaluation report. Processing takes about 1–3 minutes.</p>
+
+  <div class="card" id="form-card">
+    <div class="drop" id="drop">
+      <div><strong>Choose an audio file</strong> or drag it here</div>
+      <div style="color:var(--muted);font-size:13px;margin-top:6px">WAV, MP3, M4A, FLAC, OGG, WEBM · up to 100 MB</div>
+      <div id="fname" style="margin-top:10px;font-weight:600"></div>
+      <input type="file" id="file" accept="audio/*,video/mp4,video/webm" hidden>
+    </div>
+    <div style="margin-top:14px">
+      <label for="uid">Candidate ID (optional)</label>
+      <input type="text" id="uid" placeholder="e.g. candidate_42">
+    </div>
+    <button id="go" disabled>Analyze interview</button>
+  </div>
+
+  <div class="card hidden" id="progress-card">
+    <strong>Analyzing…</strong>
+    <ul class="steps" id="steps"></ul>
+  </div>
+
+  <div class="card hidden" id="result-card"></div>
+
+  <footer>
+    Pipeline: AssemblyAI transcription & diarization · NVIDIA NeMo TitaNet speaker embeddings + Pinecone ·
+    Random Forest role classifier (trained on the MIT Interview dataset) · librosa voice analysis · Gemini evaluation · ReportLab PDF.<br>
+    API: <code>POST /process-audio</code> (form fields <code>user_id</code> + <code>file</code> or <code>file_url</code>).
+    Part of the EvalBot graduation project, Benha University.
+  </footer>
+</main>
+<script>
+const STEPS = ["Converting audio","Transcribing with speaker diarization","Extracting prosodic features","Identifying speakers",
+  "Classifying interviewer and interviewee","Analyzing the interviewee's voice","Generating AI evaluation","Building PDF report"];
+const $ = id => document.getElementById(id);
+let chosen = null;
+const drop = $("drop"), input = $("file");
+drop.onclick = () => input.click();
+input.onchange = () => pick(input.files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); pick(e.dataTransfer.files[0]); };
+function pick(f) { if (!f) return; chosen = f; $("fname").textContent = f.name + " (" + (f.size/1048576).toFixed(1) + " MB)"; $("go").disabled = false; }
+
+function renderSteps(current, done) {
+  const idx = STEPS.indexOf(current);
+  $("steps").innerHTML = STEPS.map((s, i) => {
+    const cls = done || (idx >= 0 && i < idx) ? "done" : i === idx ? "active" : "todo";
+    return `<li class="${cls}">${s}</li>`;
+  }).join("");
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+$("go").onclick = async () => {
+  $("go").disabled = true;
+  $("result-card").classList.add("hidden");
+  $("progress-card").classList.remove("hidden");
+  renderSteps("Uploading", false);
+  const fd = new FormData();
+  fd.append("file", chosen);
+  fd.append("user_id", $("uid").value || "candidate");
+  try {
+    const r = await fetch("jobs", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "Upload failed");
+    poll(j.job_id);
+  } catch (e) { fail(e.message); }
+};
+
+async function poll(id) {
+  try {
+    const r = await fetch("jobs/" + id);
+    const j = await r.json();
+    if (j.status === "done") return show(j.result);
+    if (j.status === "error") return fail(j.error);
+    renderSteps(j.step, false);
+    setTimeout(() => poll(id), 2000);
+  } catch (e) { setTimeout(() => poll(id), 4000); }
+}
+
+function show(res) {
+  renderSteps("", true);
+  $("progress-card").classList.add("hidden");
+  const s = res.suitability_score;
+  const color = s >= 65 ? "var(--good)" : s >= 50 ? "var(--mid)" : "var(--bad)";
+  const v = res.voice || {};
+  $("result-card").innerHTML = `
+    <div class="score"><div class="num" style="color:${color}">${Math.round(s)}<span style="font-size:18px;color:var(--muted)">/100</span></div>
+      <div><strong>Suitability score</strong><div style="color:var(--muted)">${esc(res.verdict)}</div></div></div>
+    <div class="chips">
+      ${v.confidence_level ? `<span class="chip">Confidence: ${esc(v.confidence_level)}</span>` : ""}
+      ${v.anxiety_level ? `<span class="chip">Anxiety: ${esc(v.anxiety_level)}</span>` : ""}
+      ${v.fluency_level ? `<span class="chip">Fluency: ${esc(v.fluency_level)}</span>` : ""}
+    </div>
+    <ul class="summary">${(res.executive_summary || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+    <div class="links"><a class="primary" href="${res.pdf_path}" target="_blank">Open PDF report</a>
+      <a href="${res.json_path}" target="_blank">Download JSON</a></div>`;
+  $("result-card").classList.remove("hidden");
+  $("go").disabled = false;
+}
+function fail(msg) {
+  $("progress-card").classList.add("hidden");
+  $("result-card").innerHTML = `<strong>Something went wrong</strong><p class="err">${esc(msg)}</p>`;
+  $("result-card").classList.remove("hidden");
+  $("go").disabled = false;
+}
+</script>
+</body>
+</html>
