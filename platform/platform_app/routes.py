@@ -541,6 +541,17 @@ def update_job(jid: str, body: JobIn, user: Dict = Depends(recruiter)):
     return q1(f"update jobs set {sets} where id = %(jid)s returning *", {**d, "jid": jid})
 
 
+@router.delete("/jobs/{jid}")
+def delete_job(jid: str, user: Dict = Depends(recruiter)):
+    """Delete a job together with its interviews (only possible while nobody has been hired for it)."""
+    _job(jid, user)
+    if q1("select 1 from sessions s join reviews r on r.session_id = s.id where s.job_id = %s and r.status = 'hired'", [jid]):
+        raise HTTPException(400, "Someone was hired for this job. Close it instead of deleting it.")
+    q("delete from sessions where job_id = %s", [jid])
+    q("delete from jobs where id = %s", [jid])
+    return {"ok": True}
+
+
 @router.get("/jobs/{jid}/candidates")
 def job_candidates(jid: str, user: Dict = Depends(recruiter)):
     _job(jid, user)

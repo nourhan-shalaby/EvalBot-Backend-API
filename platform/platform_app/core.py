@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -14,7 +15,35 @@ logger = logging.getLogger("evalbot.platform")
 # --------------------------------------------------------------------------------------
 # Settings (all from environment / Space secrets)
 # --------------------------------------------------------------------------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+def _normalize_db_url(raw: str) -> str:
+    """Forgive common copy-paste mistakes in the DATABASE_URL secret: stray spaces or newlines,
+    the [ ] placeholder brackets left around the password, and unescaped symbols in the password."""
+    from urllib.parse import quote, unquote
+
+    url = re.sub(r"\s+", "", raw or "")
+    m = re.match(r"^(postgres(?:ql)?://)([^:/@]+):(.*)@([^@]+)$", url)
+    if not m:
+        return url
+    scheme, user, password, rest = m.groups()
+    if password.startswith("[") and password.endswith("]"):
+        password = password[1:-1]
+    return f"{scheme}{user}:{quote(unquote(password), safe='')}@{rest}"
+
+
+def _database_url() -> str:
+    """DB_PASSWORD alone is enough: the Supabase pooler address is built from SUPABASE_URL.
+    Otherwise use the full DATABASE_URL connection string."""
+    from urllib.parse import quote
+
+    password = (os.getenv("DB_PASSWORD") or "").strip()
+    ref = re.match(r"https://([a-z0-9]+)\.supabase\.co", os.getenv("SUPABASE_URL", "").strip())
+    if password and ref:
+        host = os.getenv("DB_POOLER_HOST", "aws-1-eu-central-1.pooler.supabase.com")
+        return f"postgresql://postgres.{ref.group(1)}:{quote(password, safe='')}@{host}:6543/postgres"
+    return _normalize_db_url(os.getenv("DATABASE_URL", ""))
+
+
+DATABASE_URL = _database_url()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -27,9 +56,26 @@ def enabled() -> bool:
     return bool(DATABASE_URL)
 
 
+_providers: Dict[str, Any] = {"at": 0.0, "value": {}}
+
+
+def _auth_providers() -> Dict[str, bool]:
+    """Which sign-in providers are switched on in Supabase (cached for 5 minutes)."""
+    if not SUPABASE_URL or time.time() - _providers["at"] < 300:
+        return _providers["value"]
+    try:
+        r = httpx.get(f"{SUPABASE_URL}/auth/v1/settings", headers={"apikey": SUPABASE_ANON_KEY}, timeout=5)
+        ext = r.json().get("external", {}) if r.status_code == 200 else {}
+        _providers["value"] = {"google": bool(ext.get("google"))}
+    except Exception:
+        pass
+    _providers["at"] = time.time()
+    return _providers["value"]
+
+
 def public_config() -> Dict[str, Any]:
     return {"enabled": enabled(), "supabase_url": SUPABASE_URL, "supabase_anon_key": SUPABASE_ANON_KEY,
-            "dev_auth": DEV_AUTH}
+            "dev_auth": DEV_AUTH, "providers": _auth_providers()}
 
 
 # --------------------------------------------------------------------------------------
