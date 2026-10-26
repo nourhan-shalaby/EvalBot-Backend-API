@@ -67,7 +67,10 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+# Tried in order if the configured model is unavailable (Google retires model IDs regularly)
+GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv(
+    "GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite,gemini-2.5-flash").split(",") if m.strip()]
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "interview-speaker-embeddings")
 SPEAKER_MATCH_THRESHOLD = float(os.getenv("SPEAKER_MATCH_THRESHOLD", "0.7"))
 TRANSCRIPTION_TIMEOUT_S = int(os.getenv("TRANSCRIPTION_TIMEOUT_S", "900"))
@@ -235,7 +238,7 @@ def convert_to_wav(input_path: str, output_dir: str = OUTPUT_DIR) -> str:
 # --------------------------------------------------------------------------------------
 # 2. Transcription (AssemblyAI, with speaker labels and disfluencies kept)
 # --------------------------------------------------------------------------------------
-def transcribe(audio_path: str, speakers_expected: Optional[int] = 2) -> Dict:
+def transcribe(audio_path: str, speakers_expected: Optional[int] = 2, diarize: bool = True) -> Dict:
     if not ASSEMBLYAI_API_KEY:
         raise RuntimeError("ASSEMBLYAI_API_KEY is not configured")
     headers = {"authorization": ASSEMBLYAI_API_KEY}
@@ -247,12 +250,12 @@ def transcribe(audio_path: str, speakers_expected: Optional[int] = 2) -> Dict:
 
     payload = {
         "audio_url": audio_url,
-        "speaker_labels": True,
+        "speaker_labels": diarize,
         "disfluencies": True,  # keep "um"/"uh" so filler-word analysis is meaningful
         "speech_models": ["universal-2"],
         "language_code": "en",
     }
-    if speakers_expected:
+    if diarize and speakers_expected:
         payload["speakers_expected"] = speakers_expected
     job = requests.post(f"{ASSEMBLYAI_BASE}/transcript", headers=headers, json=payload, timeout=60)
     if job.status_code != 200:
@@ -557,6 +560,29 @@ def analyze_interviewee_voice(y: np.ndarray, sr: int, utterances: List[Dict]) ->
 
 
 # --------------------------------------------------------------------------------------
+# Question / answer pairing
+# --------------------------------------------------------------------------------------
+def build_qa_pairs(utterances: List[Dict], max_pairs: int = 25) -> List[Dict]:
+    """Merge consecutive turns by role, then pair each interviewer block with the answer after it."""
+    blocks: List[Dict] = []
+    for u in utterances:
+        if blocks and blocks[-1]["role"] == u["role"]:
+            blocks[-1]["text"] += " " + u["text"]
+            blocks[-1]["end"] = u["end"]
+        else:
+            blocks.append({"role": u["role"], "text": u["text"], "start": u["start"], "end": u["end"]})
+    pairs = []
+    for q, a in zip(blocks, blocks[1:]):
+        if q["role"] == "Interviewer" and a["role"] == "Interviewee" and len(a["text"].split()) >= 4:
+            pairs.append({"index": len(pairs) + 1, "question": q["text"], "answer": a["text"],
+                          "question_start": q["start"], "answer_start": a["start"], "answer_end": a["end"],
+                          "answer_seconds": round((a["end"] - a["start"]) / 1000, 1)})
+            if len(pairs) >= max_pairs:
+                break
+    return pairs
+
+
+# --------------------------------------------------------------------------------------
 # 7. Evaluation with Gemini (structured JSON output)
 # --------------------------------------------------------------------------------------
 EVALUATION_SCHEMA = {
@@ -572,6 +598,13 @@ EVALUATION_SCHEMA = {
         "weaknesses": {"type": "array", "items": {"type": "object", "properties": {
             "area": {"type": "string"}, "feedback": {"type": "string"}},
             "required": ["area", "feedback"]}},
+        "questions": {"type": "array", "items": {"type": "object", "properties": {
+            "index": {"type": "integer"},
+            "score": {"type": "integer", "description": "0-10"},
+            "what_went_well": {"type": "string"},
+            "what_to_improve": {"type": "string"},
+            "improved_answer": {"type": "string"}},
+            "required": ["index", "score", "what_went_well", "what_to_improve", "improved_answer"]}},
         "role_fit": {"type": "array", "items": {"type": "string"}},
         "recommendations": {"type": "array", "items": {"type": "object", "properties": {
             "category": {"type": "string", "enum": ["Communication Skills", "Content Delivery",
@@ -581,81 +614,110 @@ EVALUATION_SCHEMA = {
         "next_steps": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["content_score", "executive_summary", "communication", "communication_tip", "strengths",
-                 "weaknesses", "role_fit", "recommendations", "next_steps"],
+                 "weaknesses", "questions", "role_fit", "recommendations", "next_steps"],
 }
 
 
-def _format_transcript(utterances: List[Dict], limit_chars: int = 60000) -> str:
-    lines = [f"{u['role']}: {u['text']}" for u in utterances]
-    text = "\n".join(lines)
-    return text[:limit_chars]
+def _language_rule(lang: str) -> str:
+    if lang == "ar":
+        return ("- Write ALL free-text values in clear Modern Standard Arabic. Keep technical terms "
+                "(e.g. API, Spark, SQL) and direct quotes from the transcript in English.\n"
+                "- improved_answer must stay in ENGLISH, because the interview itself is in English.\n")
+    return "- Write all text in English.\n"
 
 
-def generate_evaluation(analysis: Dict) -> Optional[Dict]:
+def _gemini_json(prompt: str, schema: Dict, temperature: float = 0.4) -> Optional[Dict]:
     client = _get_gemini_client()
     if client is None:
         return None
+    from google.genai import types
+
+    global GEMINI_MODEL
+    models = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    config = types.GenerateContentConfig(response_mime_type="application/json",
+                                         response_schema=schema, temperature=temperature)
+    for model in models:
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(model=model, contents=prompt, config=config)
+                if model != GEMINI_MODEL:
+                    logger.info("Switching Gemini model to %s", model)
+                    GEMINI_MODEL = model
+                return json.loads(response.text)
+            except Exception as e:
+                msg = str(e).lower()
+                unavailable = any(k in msg for k in ("not found", "404", "is not supported", "no longer available",
+                                                     "deprecated", "permission_denied", "not available"))
+                logger.warning("Gemini (%s) attempt %d failed: %s", model, attempt + 1, str(e)[:300])
+                if unavailable:
+                    break  # try the next model
+                time.sleep(2 * (attempt + 1))
+    return None
+
+
+def _format_transcript(utterances: List[Dict], limit_chars: int = 50000) -> str:
+    return "\n".join(f"{u['role']}: {u['text']}" for u in utterances)[:limit_chars]
+
+
+def generate_evaluation(analysis: Dict, lang: str = "en") -> Optional[Dict]:
     voice = analysis["voice_analysis"]
-    metrics = {k: voice.get(k) for k in ("speaking_rate", "filler_ratio", "repetition_score",
-                                         "composite_scores", "interpretation")} if "error" not in voice else voice
-    prompt = f"""You are EvalBot, a senior HR analyst. Evaluate the INTERVIEWEE in this interview.
+    metrics = ({k: voice.get(k) for k in ("speaking_rate", "filler_ratio", "repetition_score",
+                                          "composite_scores", "interpretation")}
+               if "error" not in voice else voice)
+    qa_text = "\n\n".join(f"[{p['index']}] Q: {p['question']}\n    A: {p['answer']}" for p in analysis["qa_pairs"])
+    prompt = f"""You are EvalBot, a senior HR analyst and interview coach. Evaluate the INTERVIEWEE.
 
 Rules:
 - Base every point on what the interviewee actually said (quote or paraphrase as evidence) or on the metrics.
-- Be specific, professional and constructive. No generic filler. Do not invent facts.
-- 5-8 strengths, 4-8 weaknesses, exactly 5 recommendations, 5 next steps, 3 bullets each for
+- Be specific, professional and constructive. No generic filler. Do not invent facts about the candidate.
+- 4-8 strengths, 3-8 weaknesses, exactly 5 recommendations, 5 next steps, 3 bullets each for
   executive summary, communication and role fit.
 - content_score: 0-100 for the quality, relevance and depth of the answers (not the voice).
-
+- questions: one entry per numbered question-answer pair below, using the same index.
+  score is 0-10 for that answer. improved_answer is a stronger version of the candidate's answer
+  (3-5 sentences, first person, STAR structure where it fits) that reuses only facts the candidate
+  mentioned; where a concrete detail would help, write a placeholder like [number] or [tool].
+{_language_rule(lang)}
 Vocal metrics (computed from audio):
 {json.dumps(metrics, indent=1)}
 Interview duration: {analysis['interview']['duration_seconds']:.0f} s, speaker turns: {analysis['interview']['speaker_turns']}
 
-Transcript:
+Question-answer pairs:
+{qa_text or '(none detected)'}
+
+Full transcript:
 {_format_transcript(analysis['transcript'])}
 """
-    from google.genai import types
-
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=EVALUATION_SCHEMA,
-                    temperature=0.4,
-                ),
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            logger.warning("Gemini evaluation attempt %d failed: %s", attempt + 1, e)
-            time.sleep(2 * (attempt + 1))
-    return None
+    return _gemini_json(prompt, EVALUATION_SCHEMA)
 
 
-def fallback_evaluation(analysis: Dict) -> Dict:
+def fallback_evaluation(analysis: Dict, lang: str = "en") -> Dict:
     """Metric-only evaluation used when Gemini is not configured or unavailable."""
     v = analysis["voice_analysis"]
+    empty = {"content_score": None, "communication": [], "communication_tip": "", "strengths": [],
+             "weaknesses": [], "questions": [], "role_fit": [], "recommendations": [], "next_steps": [],
+             "ai_generated": False}
     if "error" in v:
-        return {"content_score": None, "executive_summary": [v["error"]], "communication": [],
-                "communication_tip": "", "strengths": [], "weaknesses": [], "role_fit": [],
-                "recommendations": [], "next_steps": [], "ai_generated": False}
-    interp = v["interpretation"]
-    comm = [
-        f"Speaking rate of {v['speaking_rate']} words/sec "
-        f"({'within' if 2.0 <= v['speaking_rate'] <= 3.0 else 'outside'} the 2-3 words/sec range typical of clear speech).",
-        f"Filler words make up {v['filler_ratio'] * 100:.1f}% of the interviewee's words; fluency is {interp['fluency_level']}.",
-        f"Vocal confidence is {interp['confidence_level']} and anxiety is {interp['anxiety_level']}, based on pitch and loudness stability.",
-    ]
-    return {
-        "content_score": None,
-        "executive_summary": ["Automated content evaluation was unavailable for this run; this report is based on vocal metrics only."] + comm[:1],
-        "communication": comm,
-        "communication_tip": "Pause briefly instead of using filler words, and keep answers structured (situation, action, result).",
-        "strengths": [], "weaknesses": [], "role_fit": [], "recommendations": [], "next_steps": [],
-        "ai_generated": False,
-    }
+        return {**empty, "executive_summary": [v["error"]]}
+    i = v["interpretation"]
+    if lang == "ar":
+        comm = [
+            f"معدل الكلام {v['speaking_rate']} كلمة في الثانية (المعدل الطبيعي للكلام الواضح من 2 إلى 3).",
+            f"كلمات الحشو تمثل {v['filler_ratio'] * 100:.1f}% من كلام المرشّح، ومستوى الطلاقة: {L('ar', i['fluency_level'])}.",
+            f"الثقة الصوتية: {L('ar', i['confidence_level'])}، والقلق: {L('ar', i['anxiety_level'])}، بناءً على ثبات طبقة الصوت وشدته.",
+        ]
+        note = "لم يكن تقييم المحتوى بالذكاء الاصطناعي متاحاً في هذه المرة، فالتقرير مبني على مقاييس الصوت فقط."
+        tip = "توقّف لحظة بدل استخدام كلمات الحشو، ورتّب إجاباتك: الموقف، ثم ما فعلته، ثم النتيجة."
+    else:
+        comm = [
+            f"Speaking rate of {v['speaking_rate']} words/sec "
+            f"({'within' if 2.0 <= v['speaking_rate'] <= 3.0 else 'outside'} the 2-3 words/sec range typical of clear speech).",
+            f"Filler words make up {v['filler_ratio'] * 100:.1f}% of the interviewee's words; fluency is {i['fluency_level']}.",
+            f"Vocal confidence is {i['confidence_level']} and anxiety is {i['anxiety_level']}, based on pitch and loudness stability.",
+        ]
+        note = "Automated content evaluation was unavailable for this run; this report is based on vocal metrics only."
+        tip = "Pause briefly instead of using filler words, and keep answers structured (situation, action, result)."
+    return {**empty, "executive_summary": [note, comm[0]], "communication": comm, "communication_tip": tip}
 
 
 # --------------------------------------------------------------------------------------
@@ -674,239 +736,545 @@ def calculate_acceptance_probability(voice: Dict, content_score: Optional[int]) 
     return round(0.6 * content_score + 0.4 * delivery * 100, 1)
 
 
-def verdict_for(score: float) -> str:
-    if score >= 80:
-        return "Outstanding candidate, recommended for advancement."
-    if score >= 65:
-        return "Strong candidate, suitable for further evaluation."
-    if score >= 50:
-        return "Moderate potential, needs additional assessment."
-    return "Limited fit at this stage; significant improvement needed."
+def verdict_for(score: Optional[float], lang: str = "en", provisional: bool = False) -> str:
+    if provisional:
+        return L(lang, "verdict_provisional")
+    key = ("verdict_top" if score >= 80 else "verdict_strong" if score >= 65
+           else "verdict_moderate" if score >= 50 else "verdict_low")
+    return L(lang, key)
 
 
 # --------------------------------------------------------------------------------------
-# 8. Charts + PDF report
+# Labels (English / Arabic)
 # --------------------------------------------------------------------------------------
+LABELS = {
+    "en": {
+        "report_title": "Candidate Interview Analysis", "header": "EvalBot  |  Interview Analysis Report",
+        "footer": "Confidential - generated automatically by EvalBot", "page": "Page",
+        "candidate_id": "Candidate ID", "generated": "Generated",
+        "suitability": "Suitability score", "score_basis": "Content {content} (60%) + vocal delivery (40%)",
+        "interview": "Interview", "duration": "Duration", "minutes": "minutes", "speaker_turns": "Speaker turns",
+        "speakers": "Speakers", "interviewee_time": "Interviewee speaking time", "words": "words",
+        "questions_answered": "Questions answered",
+        "exec_summary": "Executive Summary", "comm_title": "Communication & Vocal Dynamics",
+        "metric": "Metric", "value": "Value", "meaning": "What it means",
+        "speaking_rate": "Speaking rate", "wps": "words/sec", "fillers": "Filler words", "of_words": "of words",
+        "most_frequent": "Most frequent", "none": "none", "repetition": "Repetition", "fluency": "Fluency",
+        "confidence": "Confidence", "anxiety": "Anxiety", "hesitation": "Hesitation", "pitch": "Pitch",
+        "m_rate": "2.0-3.0 words/sec is typical of clear, paced speech.",
+        "m_rep": "Repeated words and phrases; lower is better.", "m_flu": "Combines filler words and repetition.",
+        "m_conf": "Steady loudness, few fillers, comfortable pace.",
+        "m_anx": "Pitch variability and voice instability (jitter / shimmer).",
+        "m_pitch": "Average voice pitch and its variation.",
+        "observations": "Observations", "tip": "Tip for workplace communication",
+        "qa_title": "Question-by-Question Feedback", "question": "Question", "answer": "Answer (excerpt)",
+        "went_well": "What went well", "to_improve": "What to improve", "better_answer": "A stronger answer",
+        "competency_title": "Competency Evaluation", "strengths": "Strengths", "competency": "Competency",
+        "assessment": "Assessment and evidence", "evidence": "Evidence", "dev_areas": "Development areas",
+        "area": "Area", "feedback": "Actionable feedback", "role_fit": "Role Fit & Potential",
+        "recs": "Recommendations for the Candidate", "rec_area": "Area", "recommendation": "Recommendation",
+        "how_to": "How to practice", "next_steps": "Next Steps for Hiring Managers",
+        "appendix": "Appendix: Annotated Transcript",
+        "appendix_note": "Speaker roles were assigned automatically by the role classifier.",
+        "time": "Time", "role": "Role", "text": "Text", "Interviewer": "Interviewer", "Interviewee": "Interviewee",
+        "ai_unavailable": "Note: AI content evaluation was unavailable for this run, so sections that depend on it were omitted.",
+        "chart_vocal": "Vocal dynamics (0 = low, 1 = high)", "chart_talk": "Talk time",
+        "chart_q": "Score per question (0-10)",
+        "high": "High", "moderate": "Moderate", "low": "Low", "fluent": "Fluent", "disfluent": "Disfluent",
+        "Communication Skills": "Communication Skills", "Content Delivery": "Content Delivery",
+        "Professional Presentation": "Professional Presentation",
+        "verdict_top": "Outstanding candidate, recommended for advancement.",
+        "verdict_strong": "Strong candidate, suitable for further evaluation.",
+        "verdict_moderate": "Moderate potential, needs additional assessment.",
+        "verdict_low": "Limited fit at this stage; significant improvement needed.",
+        "verdict_provisional": "Provisional: based on vocal delivery only (answer content was not evaluated).",
+    },
+    "ar": {
+        "report_title": "تحليل مقابلة المرشّح", "header": "EvalBot  |  تقرير تحليل المقابلة",
+        "footer": "سري - تم إنشاؤه تلقائياً بواسطة EvalBot", "page": "صفحة",
+        "candidate_id": "رقم المرشّح", "generated": "تاريخ الإنشاء",
+        "suitability": "درجة الملاءمة", "score_basis": "المحتوى {content} (60%) + الأداء الصوتي (40%)",
+        "interview": "المقابلة", "duration": "المدة", "minutes": "دقيقة", "speaker_turns": "عدد المداخلات",
+        "speakers": "المتحدثون", "interviewee_time": "مدة كلام المرشّح", "words": "كلمة",
+        "questions_answered": "عدد الأسئلة المُجاب عليها",
+        "exec_summary": "الملخص التنفيذي", "comm_title": "التواصل والأداء الصوتي",
+        "metric": "المقياس", "value": "القيمة", "meaning": "المعنى",
+        "speaking_rate": "معدل الكلام", "wps": "كلمة/ثانية", "fillers": "كلمات الحشو", "of_words": "من الكلمات",
+        "most_frequent": "الأكثر تكراراً", "none": "لا يوجد", "repetition": "التكرار", "fluency": "الطلاقة",
+        "confidence": "الثقة", "anxiety": "القلق", "hesitation": "التردد", "pitch": "طبقة الصوت",
+        "m_rate": "من 2 إلى 3 كلمات في الثانية هو المعدل المعتاد للكلام الواضح.",
+        "m_rep": "تكرار الكلمات والعبارات، وكلما قلّ كان أفضل.", "m_flu": "يجمع بين كلمات الحشو والتكرار.",
+        "m_conf": "ثبات شدة الصوت، وقلة كلمات الحشو، وسرعة مريحة.",
+        "m_anx": "تذبذب طبقة الصوت وعدم ثباته.", "m_pitch": "متوسط طبقة الصوت ومدى تغيّرها.",
+        "observations": "ملاحظات", "tip": "نصيحة للتواصل في بيئة العمل",
+        "qa_title": "تقييم كل سؤال على حدة", "question": "السؤال", "answer": "الإجابة (مقتطف)",
+        "went_well": "ما كان جيداً", "to_improve": "ما يحتاج إلى تحسين", "better_answer": "إجابة أقوى",
+        "competency_title": "تقييم الكفاءات", "strengths": "نقاط القوة", "competency": "الكفاءة",
+        "assessment": "التقييم والدليل", "evidence": "الدليل", "dev_areas": "مجالات التطوير",
+        "area": "المجال", "feedback": "ملاحظات قابلة للتطبيق", "role_fit": "الملاءمة للدور والإمكانات",
+        "recs": "توصيات للمرشّح", "rec_area": "المجال", "recommendation": "التوصية",
+        "how_to": "طريقة التدريب", "next_steps": "الخطوات التالية لمسؤولي التوظيف",
+        "appendix": "ملحق: نص المقابلة",
+        "appendix_note": "تم تحديد دور كل متحدث تلقائياً بواسطة نموذج تصنيف الأدوار.",
+        "time": "الوقت", "role": "الدور", "text": "النص", "Interviewer": "المحاوِر", "Interviewee": "المرشّح",
+        "ai_unavailable": "ملاحظة: لم يكن تقييم المحتوى بالذكاء الاصطناعي متاحاً، فتم حذف الأقسام المعتمدة عليه.",
+        "chart_vocal": "الأداء الصوتي (0 = منخفض، 1 = مرتفع)", "chart_talk": "توزيع وقت الكلام",
+        "chart_q": "درجة كل سؤال (من 10)",
+        "high": "مرتفع", "moderate": "متوسط", "low": "منخفض", "fluent": "طليق", "disfluent": "متقطع",
+        "Communication Skills": "مهارات التواصل", "Content Delivery": "تقديم المحتوى",
+        "Professional Presentation": "الحضور المهني",
+        "verdict_top": "مرشّح متميز، يُنصح بانتقاله للمرحلة التالية.",
+        "verdict_strong": "مرشّح قوي، مناسب لمزيد من التقييم.",
+        "verdict_moderate": "إمكانات متوسطة، يحتاج إلى تقييم إضافي.",
+        "verdict_low": "ملاءمة محدودة حالياً، ويحتاج إلى تحسين كبير.",
+        "verdict_provisional": "مبدئي: مبني على الأداء الصوتي فقط (لم يتم تقييم محتوى الإجابات).",
+    },
+}
+
+
+def L(lang: str, key: str) -> str:
+    return LABELS.get(lang, LABELS["en"]).get(key, LABELS["en"].get(key, key))
+
+
+# --------------------------------------------------------------------------------------
+# 8. Charts + PDF report (English left-to-right, Arabic right-to-left)
+# --------------------------------------------------------------------------------------
+from reportlab.lib.enums import TA_CENTER, TA_LEFT  # noqa: E402
+from reportlab.pdfbase import pdfmetrics  # noqa: E402
+from reportlab.pdfbase.ttfonts import TTFont  # noqa: E402
+from reportlab.platypus import Flowable  # noqa: E402
+
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 BRAND = colors.HexColor("#0B3D91")
 ACCENT = colors.HexColor("#1F6FEB")
 MUTED = colors.HexColor("#5B6573")
+INK = colors.HexColor("#222222")
 GRID = colors.HexColor("#DDE4EE")
 SOFT = colors.HexColor("#F4F7FB")
+GOOD_BG = colors.HexColor("#EEF8EF")
+BAD_BG = colors.HexColor("#FDF1F1")
+ARABIC_RE = re.compile(r"[؀-ۿ]")
+_fonts_registered = False
 
 
-def _chart_scores(composite: Dict) -> io.BytesIO:
-    labels = ["Confidence", "Anxiety", "Hesitation"]
+def _register_fonts() -> bool:
+    global _fonts_registered
+    if _fonts_registered:
+        return True
+    try:
+        pdfmetrics.registerFont(TTFont("Amiri", os.path.join(FONT_DIR, "Amiri-Regular.ttf")))
+        pdfmetrics.registerFont(TTFont("Amiri-Bold", os.path.join(FONT_DIR, "Amiri-Bold.ttf")))
+        _fonts_registered = True
+    except Exception as e:
+        logger.warning("Arabic font not available: %s", e)
+    return _fonts_registered
+
+
+def _get_display(text: str) -> str:
+    # bidi.algorithm implements the full Unicode bidi algorithm, including bracket mirroring
+    try:
+        from bidi.algorithm import get_display
+    except ImportError:
+        from bidi import get_display
+    return get_display(text)
+
+
+def _shape(text: str) -> str:
+    """Arabic letter shaping + bidi reordering for one visual line."""
+    import arabic_reshaper
+    return _get_display(arabic_reshaper.reshape(text))
+
+
+class RTLParagraph(Flowable):
+    """Right-to-left paragraph: wraps in logical order, then reorders each line for display."""
+
+    def __init__(self, text, font="Amiri", size=10, leading=None, color=INK, align="right",
+                 space_before=0, space_after=4, lines=None):
+        super().__init__()
+        self.text = str(text)
+        self.font, self.size = font, size
+        self.leading = leading or size * 1.55
+        self.color, self.align = color, align
+        self.space_before, self.space_after = space_before, space_after
+        self._lines = lines
+        self._width = 0
+
+    def _break(self, width):
+        import arabic_reshaper
+        words = arabic_reshaper.reshape(self.text.replace("\n", " ")).split()
+        lines, cur = [], ""
+        for w in words:
+            trial = f"{cur} {w}".strip()
+            if pdfmetrics.stringWidth(trial, self.font, self.size) <= width or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines or [""]
+
+    def wrap(self, aw, ah):
+        self._width = aw
+        if self._lines is None:
+            self._lines = self._break(aw)
+        return aw, self.space_before + len(self._lines) * self.leading + self.space_after
+
+    def split(self, aw, ah):
+        lines = self._lines if self._lines is not None else self._break(aw)
+        fit = int((ah - self.space_before) // self.leading)
+        if fit <= 0:
+            return []
+        if fit >= len(lines):
+            return [self]
+        kw = dict(font=self.font, size=self.size, leading=self.leading, color=self.color, align=self.align)
+        return [RTLParagraph(self.text, space_before=self.space_before, space_after=0, lines=lines[:fit], **kw),
+                RTLParagraph(self.text, space_before=0, space_after=self.space_after, lines=lines[fit:], **kw)]
+
+    def draw(self):
+        c = self.canv
+        c.setFont(self.font, self.size)
+        c.setFillColor(self.color)
+        total = self.space_before + len(self._lines) * self.leading + self.space_after
+        for i, line in enumerate(self._lines):
+            y = total - self.space_before - (i + 1) * self.leading + (self.leading - self.size) * 0.55
+            visual = _get_display(line)
+            if self.align == "center":
+                c.drawCentredString(self._width / 2, y, visual)
+            else:
+                c.drawRightString(self._width, y, visual)
+
+
+class ReportBuilder:
+    """Creates paragraphs/tables in the right direction and font for the report language."""
+
+    STYLES = {  # size, leading, color, bold, space_before, space_after
+        "title": (24, 30, BRAND, True, 0, 4), "subtitle": (11, 15, MUTED, False, 0, 4),
+        "h1": (15, 20, BRAND, True, 6, 10), "h2": (11.5, 15, ACCENT, True, 10, 6),
+        "body": (9.5, 13.5, INK, False, 0, 4), "small": (8.5, 11.5, MUTED, False, 0, 4),
+        "bullet": (9.5, 13.5, INK, False, 0, 3), "th": (9.5, 12, colors.white, True, 0, 0),
+        "td": (9.5, 13, INK, False, 0, 0), "tdb": (9.5, 13, INK, True, 0, 0),
+    }
+
+    def __init__(self, lang: str):
+        self.lang = lang
+        self.rtl = lang == "ar" and _register_fonts()
+        if lang == "ar" and not self.rtl:
+            self.lang = "en"
+        self._pstyles = {}
+        for name, (size, leading, color, bold, sb, sa) in self.STYLES.items():
+            self._pstyles[name] = ParagraphStyle(
+                name, fontName="Helvetica-Bold" if bold else "Helvetica", fontSize=size, leading=leading,
+                textColor=color, spaceBefore=sb, spaceAfter=sa,
+                alignment=TA_CENTER if name in ("title", "subtitle") else TA_LEFT,
+                leftIndent=14 if name == "bullet" else 0, bulletIndent=4 if name == "bullet" else 0)
+
+    def t(self, key):
+        return L(self.lang, key)
+
+    def p(self, text, kind="body", ltr=False):
+        """Paragraph; English content inside an Arabic report (e.g. the transcript) can be forced LTR."""
+        text = "" if text is None else str(text)
+        if self.rtl and not ltr and (ARABIC_RE.search(text) or kind in ("title", "subtitle", "h1", "h2")):
+            size, leading, color, bold, sb, sa = self.STYLES[kind]
+            if kind == "bullet":
+                text = "• " + text
+            return RTLParagraph(text, font="Amiri-Bold" if bold else "Amiri", size=size + 1, leading=leading * 1.25,
+                                color=color, align="center" if kind in ("title", "subtitle") else "right",
+                                space_before=sb, space_after=sa)
+        clean = escape(text.encode("latin-1", "replace").decode("latin-1"))
+        style = self._pstyles[kind]
+        if self.rtl and not ltr and kind != "bullet":  # numbers/English inside an Arabic table cell
+            style = ParagraphStyle(kind + "_r", parent=style, alignment=2)
+        if kind == "bullet":
+            return Paragraph(clean, style, bulletText="•")
+        return Paragraph(clean, style)
+
+    def table(self, rows, widths, header=True, zebra=True, bg=None):
+        if self.rtl:
+            rows = [list(reversed(r)) for r in rows]
+            widths = list(reversed(widths))
+        t = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
+        style = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("GRID", (0, 0), (-1, -1), 0.5, GRID),
+                 ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                 ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6)]
+        if header:
+            style.append(("BACKGROUND", (0, 0), (-1, 0), BRAND))
+        if bg is not None:
+            style.append(("BACKGROUND", (0, 1 if header else 0), (-1, -1), bg))
+        elif zebra:
+            style += [("BACKGROUND", (0, r), (-1, r), SOFT) for r in range(1 if header else 0, len(rows)) if r % 2 == 0]
+        t.setStyle(TableStyle(style))
+        return t
+
+
+def _chart_text(text: str, lang: str) -> str:
+    return _shape(text) if lang == "ar" and ARABIC_RE.search(text) else text
+
+
+def _chart_font(lang: str):
+    if lang != "ar":
+        return None
+    from matplotlib.font_manager import FontProperties
+    return FontProperties(fname=os.path.join(FONT_DIR, "Amiri-Regular.ttf"))
+
+
+def _fig_to_buffer(fig) -> io.BytesIO:
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=200)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _chart_scores(composite: Dict, lang: str) -> io.BytesIO:
+    fp = _chart_font(lang)
+    labels = [_chart_text(L(lang, k), lang) for k in ("confidence", "anxiety", "hesitation")]
     values = [composite["confidence"], composite["anxiety"], composite["hesitation"]]
     fig, ax = plt.subplots(figsize=(5.2, 2.6))
     bars = ax.barh(labels, values, color=["#2E7D32", "#C62828", "#EF6C00"], height=0.55)
     ax.set_xlim(0, 1)
     ax.invert_yaxis()
+    if fp:
+        for lbl in ax.get_yticklabels():
+            lbl.set_fontproperties(fp)
+            lbl.set_fontsize(12)
     for b, v in zip(bars, values):
         ax.text(min(v + 0.02, 0.9), b.get_y() + b.get_height() / 2, f"{v:.2f}", va="center", fontsize=10)
-    ax.set_title("Vocal dynamics (0 = low, 1 = high)", fontsize=11)
+    ax.set_title(_chart_text(L(lang, "chart_vocal"), lang), fontsize=11 if not fp else 13, fontproperties=fp)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
     ax.grid(axis="x", alpha=0.3)
-    buf = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buf, format="png", dpi=200)
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    return _fig_to_buffer(fig)
 
 
-def _chart_talk_time(utterances: List[Dict]) -> io.BytesIO:
+def _chart_talk_time(utterances: List[Dict], lang: str) -> io.BytesIO:
+    fp = _chart_font(lang)
     totals: Dict[str, float] = {}
     for u in utterances:
         totals[u["role"]] = totals.get(u["role"], 0.0) + (u["end"] - u["start"]) / 1000
     fig, ax = plt.subplots(figsize=(3.2, 2.6))
-    ax.pie(list(totals.values()), labels=list(totals.keys()), autopct="%1.0f%%",
-           colors=["#1F6FEB", "#9DB9E8", "#CCCCCC"][: len(totals)], startangle=90,
-           wedgeprops={"linewidth": 1, "edgecolor": "white"})
-    ax.set_title("Talk time", fontsize=11)
-    buf = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buf, format="png", dpi=200)
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    _, texts, _ = ax.pie(list(totals.values()), labels=[_chart_text(L(lang, r), lang) for r in totals],
+                         autopct="%1.0f%%", colors=["#1F6FEB", "#9DB9E8", "#CCCCCC"][: len(totals)],
+                         startangle=90, wedgeprops={"linewidth": 1, "edgecolor": "white"})
+    if fp:
+        for tx in texts:
+            tx.set_fontproperties(fp)
+            tx.set_fontsize(12)
+    ax.set_title(_chart_text(L(lang, "chart_talk"), lang), fontsize=11 if not fp else 13, fontproperties=fp)
+    return _fig_to_buffer(fig)
 
 
-def _p(text, style) -> Paragraph:
-    clean = str(text).encode("latin-1", "replace").decode("latin-1")
-    return Paragraph(escape(clean), style)
+def _chart_questions(qa: List[Dict], lang: str) -> Optional[io.BytesIO]:
+    scored = [q for q in qa if q.get("score") is not None]
+    if not scored:
+        return None
+    fp = _chart_font(lang)
+    fig, ax = plt.subplots(figsize=(6.6, 2.2))
+    xs = [f"Q{q['index']}" for q in scored]
+    ys = [q["score"] for q in scored]
+    cols = ["#2E7D32" if s >= 7 else "#EF6C00" if s >= 5 else "#C62828" for s in ys]
+    ax.bar(xs, ys, color=cols, width=0.6)
+    ax.set_ylim(0, 10)
+    for x, y in zip(xs, ys):
+        ax.text(x, y + 0.2, str(y), ha="center", fontsize=9)
+    ax.set_title(_chart_text(L(lang, "chart_q"), lang), fontsize=11 if not fp else 13, fontproperties=fp)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    ax.grid(axis="y", alpha=0.3)
+    return _fig_to_buffer(fig)
 
 
-def _table(rows, widths, header=True, zebra=True):
-    t = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
-    style = [
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("GRID", (0, 0), (-1, -1), 0.5, GRID),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-    ]
-    if header:
-        style += [("BACKGROUND", (0, 0), (-1, 0), BRAND)]
-    if zebra:
-        for r in range(1 if header else 0, len(rows)):
-            if r % 2 == 0:
-                style.append(("BACKGROUND", (0, r), (-1, r), SOFT))
-    t.setStyle(TableStyle(style))
-    return t
-
-
-def create_pdf_report(analysis: Dict, output_path: str) -> None:
+def create_pdf_report(analysis: Dict, output_path: str, lang: str = "en") -> None:
+    rb = ReportBuilder(lang)
+    lang = rb.lang
+    T, P = rb.t, rb.p
     doc = SimpleDocTemplate(output_path, pagesize=letter, rightMargin=0.75 * inch, leftMargin=0.75 * inch,
                             topMargin=0.9 * inch, bottomMargin=0.8 * inch,
                             title="EvalBot Interview Analysis Report", author="EvalBot")
-    title = ParagraphStyle("title", fontName="Helvetica-Bold", fontSize=24, leading=30, textColor=BRAND, alignment=1)
-    subtitle = ParagraphStyle("subtitle", fontName="Helvetica", fontSize=11, leading=15, textColor=MUTED, alignment=1)
-    h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=15, leading=19, textColor=BRAND, spaceBefore=6, spaceAfter=10)
-    h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=11.5, leading=15, textColor=ACCENT, spaceBefore=10, spaceAfter=6)
-    body = ParagraphStyle("body", fontName="Helvetica", fontSize=9.5, leading=13.5, textColor=colors.HexColor("#222222"), spaceAfter=4)
-    small = ParagraphStyle("small", parent=body, fontSize=8.5, leading=11.5, textColor=MUTED)
-    bullet = ParagraphStyle("bullet", parent=body, leftIndent=14, bulletIndent=4)
-    th = ParagraphStyle("th", parent=body, fontName="Helvetica-Bold", textColor=colors.white, spaceAfter=0)
-    td = ParagraphStyle("td", parent=body, spaceAfter=0)
-    tdb = ParagraphStyle("tdb", parent=td, fontName="Helvetica-Bold")
-
     ev = analysis["evaluation"]
     voice = analysis["voice_analysis"]
     score = analysis["suitability_score"]
     score_color = "#2E7D32" if score >= 65 else "#EF6C00" if score >= 50 else "#C62828"
-    story = []
+    W = doc.width
+    story: List = []
 
     def bullets(items):
         for it in items:
-            clean = escape(str(it).encode("latin-1", "replace").decode("latin-1"))
-            story.append(Paragraph(clean, bullet, bulletText="•"))
+            story.append(P(it, "bullet"))
 
     def header_footer(canvas, d):
         canvas.saveState()
+        top = letter[1] - 0.6 * inch
         canvas.setStrokeColor(ACCENT)
         canvas.setLineWidth(0.8)
-        canvas.line(d.leftMargin, letter[1] - 0.6 * inch, letter[0] - d.rightMargin, letter[1] - 0.6 * inch)
-        canvas.setFont("Helvetica-Bold", 8.5)
-        canvas.setFillColor(BRAND)
-        canvas.drawString(d.leftMargin, letter[1] - 0.52 * inch, "EvalBot  |  Interview Analysis Report")
-        canvas.setFont("Helvetica", 8)
-        canvas.setFillColor(MUTED)
-        canvas.drawRightString(letter[0] - d.rightMargin, letter[1] - 0.52 * inch, analysis["generated_at"])
-        canvas.drawString(d.leftMargin, 0.5 * inch, "Confidential - generated automatically by EvalBot")
-        canvas.drawRightString(letter[0] - d.rightMargin, 0.5 * inch, f"Page {d.page}")
+        canvas.line(d.leftMargin, top, letter[0] - d.rightMargin, top)
+        left_x, right_x = d.leftMargin, letter[0] - d.rightMargin
+        header = T("header")
+        footer = T("footer")
+        page = f"{T('page')} {d.page}"
+        if rb.rtl:
+            canvas.setFont("Amiri-Bold", 9.5)
+            canvas.setFillColor(BRAND)
+            canvas.drawRightString(right_x, top + 6, _shape(header))
+            canvas.setFont("Amiri", 9)
+            canvas.setFillColor(MUTED)
+            canvas.drawString(left_x, top + 6, analysis["generated_at"])
+            canvas.drawRightString(right_x, 0.5 * inch, _shape(footer))
+            canvas.drawString(left_x, 0.5 * inch, _shape(page))
+        else:
+            canvas.setFont("Helvetica-Bold", 8.5)
+            canvas.setFillColor(BRAND)
+            canvas.drawString(left_x, top + 6, header)
+            canvas.setFont("Helvetica", 8)
+            canvas.setFillColor(MUTED)
+            canvas.drawRightString(right_x, top + 6, analysis["generated_at"])
+            canvas.drawString(left_x, 0.5 * inch, footer)
+            canvas.drawRightString(right_x, 0.5 * inch, page)
         canvas.restoreState()
 
-    # ---- Page 1: overview -------------------------------------------------------------
-    story += [Spacer(1, 0.3 * inch), _p("Candidate Interview Analysis", title), Spacer(1, 6),
-              _p(f"Candidate ID: {analysis['user_id']}   |   Generated {analysis['generated_at']}", subtitle),
-              Spacer(1, 0.35 * inch)]
-    score_tbl = Table([[Paragraph(f"<font size=30 color='{score_color}'><b>{score:.0f}</b></font>"
-                                  f"<font size=12 color='#5B6573'> / 100</font>", ParagraphStyle("s", alignment=1, leading=36)),
-                        Paragraph(f"<b>Suitability score</b><br/>{escape(analysis['verdict'])}<br/>"
-                                  f"<font size=8 color='#5B6573'>Content {ev.get('content_score') if ev.get('content_score') is not None else 'n/a'}"
-                                  f" (60%) + vocal delivery (40%)</font>", body)]],
-                      colWidths=[1.8 * inch, 5.0 * inch])
+    # ---- Page 1: overview ------------------------------------------------------------
+    story += [Spacer(1, 0.25 * inch), P(T("report_title"), "title"), Spacer(1, 4),
+              P(f"{T('candidate_id')}: {analysis['user_id']}   |   {T('generated')}: {analysis['generated_at']}", "subtitle"),
+              Spacer(1, 0.3 * inch)]
+    num = Paragraph(f"<font size=30 color='{score_color}'><b>{score:.0f}</b></font>"
+                    f"<font size=12 color='#5B6573'> / 100</font>", ParagraphStyle("s", alignment=1, leading=36))
+    content = ev.get("content_score") if ev.get("content_score") is not None else "n/a"
+    detail = [P(T("suitability"), "tdb"), P(analysis["verdict"], "td"),
+              P(T("score_basis").format(content=content), "small")]
+    cells = [num, detail]
+    widths = [1.8 * inch, W - 1.8 * inch]
+    if rb.rtl:
+        cells, widths = cells[::-1], widths[::-1]
+    score_tbl = Table([cells], colWidths=widths)
     score_tbl.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1, GRID), ("BACKGROUND", (0, 0), (-1, -1), SOFT),
                                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 12),
-                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 12)]))
+                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 10)]))
     story += [score_tbl, Spacer(1, 0.25 * inch)]
 
     info = analysis["interview"]
-    rows = [[_p("Interview", th), _p("", th)],
-            [_p("Duration", tdb), _p(f"{info['duration_seconds'] / 60:.1f} minutes", td)],
-            [_p("Speaker turns", tdb), _p(str(info["speaker_turns"]), td)],
-            [_p("Speakers", tdb), _p(", ".join(f"{s['speaker_name']} ({s['role']})" for s in analysis["speakers"].values()), td)]]
+    rows = [[P(T("interview"), "th"), P("", "th")],
+            [P(T("duration"), "tdb"), P(f"{info['duration_seconds'] / 60:.1f} {T('minutes')}", "td")],
+            [P(T("speaker_turns"), "tdb"), P(str(info["speaker_turns"]), "td")],
+            [P(T("questions_answered"), "tdb"), P(str(len(analysis["qa_pairs"])), "td")],
+            [P(T("speakers"), "tdb"), P(" / ".join(f"{s['speaker_name']} ({T(s['role'])})"
+                                                 for s in analysis["speakers"].values()), "td")]]
     if "error" not in voice:
-        rows.append([_p("Interviewee speaking time", tdb),
-                     _p(f"{voice['speaking_time_seconds'] / 60:.1f} minutes, {voice['word_count']} words", td)])
-    story += [_table(rows, [2.2 * inch, 4.6 * inch]), Spacer(1, 0.2 * inch)]
-
-    story.append(_p("Executive Summary", h1))
+        rows.append([P(T("interviewee_time"), "tdb"),
+                     P(f"{voice['speaking_time_seconds'] / 60:.1f} {T('minutes')}, {voice['word_count']} {T('words')}", "td")])
+    story += [rb.table(rows, [2.3 * inch, W - 2.3 * inch]), Spacer(1, 0.2 * inch)]
+    story.append(P(T("exec_summary"), "h1"))
     bullets(ev.get("executive_summary", []))
     story.append(PageBreak())
 
-    # ---- Page 2: communication & vocal dynamics -----------------------------------------
-    story.append(_p("Communication & Vocal Dynamics", h1))
+    # ---- Communication & vocal dynamics ------------------------------------------------
+    story.append(P(T("comm_title"), "h1"))
     if "error" not in voice:
-        interp = voice["interpretation"]
+        it = voice["interpretation"]
         cs = voice["composite_scores"]
-        top_fillers = ", ".join(f"'{k}' x{v}" for k, v in list(voice["filler_words"].items())[:5]) or "none"
-        metric_rows = [
-            [_p("Metric", th), _p("Value", th), _p("What it means", th)],
-            [_p("Speaking rate", tdb), _p(f"{voice['speaking_rate']:.2f} words/sec", td), _p("2.0-3.0 words/sec is typical of clear, paced speech.", td)],
-            [_p("Filler words", tdb), _p(f"{voice['filler_ratio'] * 100:.1f}% of words", td), _p(f"Most frequent: {top_fillers}", td)],
-            [_p("Repetition", tdb), _p(f"{voice['repetition_score']:.3f}", td), _p("Repeated words and phrases; lower is better.", td)],
-            [_p("Fluency", tdb), _p(interp["fluency_level"].title(), td), _p("Combines filler words and repetition.", td)],
-            [_p("Confidence", tdb), _p(f"{interp['confidence_level'].title()} ({cs['confidence']:.2f})", td), _p("Steady loudness, few fillers, comfortable pace.", td)],
-            [_p("Anxiety", tdb), _p(f"{interp['anxiety_level'].title()} ({cs['anxiety']:.2f})", td), _p("Pitch variability and voice instability (jitter / shimmer).", td)],
-            [_p("Pitch", tdb), _p(f"{voice['pitch_analysis']['mean_hz']:.0f} Hz (sd {voice['pitch_analysis']['std_dev_hz']:.0f})", td), _p("Average voice pitch and its variation.", td)],
+        top_f = ", ".join(f"'{k}' x{v}" for k, v in list(voice["filler_words"].items())[:5]) or T("none")
+        mrows = [
+            [P(T("metric"), "th"), P(T("value"), "th"), P(T("meaning"), "th")],
+            [P(T("speaking_rate"), "tdb"), P(f"{voice['speaking_rate']:.2f} {T('wps')}", "td"), P(T("m_rate"), "td")],
+            [P(T("fillers"), "tdb"), P(f"{voice['filler_ratio'] * 100:.1f}% {T('of_words')}", "td"),
+             P(f"{T('most_frequent')}: {top_f}", "td")],
+            [P(T("repetition"), "tdb"), P(f"{voice['repetition_score']:.3f}", "td"), P(T("m_rep"), "td")],
+            [P(T("fluency"), "tdb"), P(T(it["fluency_level"]), "td"), P(T("m_flu"), "td")],
+            [P(T("confidence"), "tdb"), P(f"{T(it['confidence_level'])} ({cs['confidence']:.2f})", "td"), P(T("m_conf"), "td")],
+            [P(T("anxiety"), "tdb"), P(f"{T(it['anxiety_level'])} ({cs['anxiety']:.2f})", "td"), P(T("m_anx"), "td")],
+            [P(T("pitch"), "tdb"), P(f"{voice['pitch_analysis']['mean_hz']:.0f} Hz (sd {voice['pitch_analysis']['std_dev_hz']:.0f})", "td"),
+             P(T("m_pitch"), "td")],
         ]
-        story += [_table(metric_rows, [1.5 * inch, 1.7 * inch, 3.6 * inch]), Spacer(1, 0.15 * inch)]
-        charts = Table([[Image(_chart_scores(cs), width=3.9 * inch, height=1.95 * inch),
-                         Image(_chart_talk_time(analysis["transcript"]), width=2.5 * inch, height=2.03 * inch)]],
-                       colWidths=[4.1 * inch, 2.7 * inch])
-        story += [charts, Spacer(1, 0.1 * inch)]
+        story += [rb.table(mrows, [1.5 * inch, 1.7 * inch, W - 3.2 * inch]), Spacer(1, 0.15 * inch)]
+        imgs = [Image(_chart_scores(cs, lang), width=3.9 * inch, height=1.95 * inch),
+                Image(_chart_talk_time(analysis["transcript"], lang), width=2.5 * inch, height=2.03 * inch)]
+        cw = [4.1 * inch, W - 4.1 * inch]
+        if rb.rtl:
+            imgs, cw = imgs[::-1], cw[::-1]
+        story += [Table([imgs], colWidths=cw), Spacer(1, 0.1 * inch)]
     else:
-        story.append(_p(voice["error"], body))
+        story.append(P(voice["error"], "body"))
     if ev.get("communication"):
-        story.append(_p("Observations", h2))
+        story.append(P(T("observations"), "h2"))
         bullets(ev["communication"])
     if ev.get("communication_tip"):
-        story.append(_p("Tip for workplace communication", h2))
-        story.append(_p(ev["communication_tip"], body))
+        story.append(P(T("tip"), "h2"))
+        story.append(P(ev["communication_tip"], "body"))
+
+    # ---- Question-by-question feedback --------------------------------------------------
+    qa = analysis["qa_pairs"]
+    if qa:
+        story.append(PageBreak())
+        story.append(P(T("qa_title"), "h1"))
+        chart = _chart_questions(qa, lang)
+        if chart:
+            story += [Image(chart, width=W, height=W * 2.2 / 6.6), Spacer(1, 0.1 * inch)]
+        for q in qa:
+            badge = f"{q['score']}/10" if q.get("score") is not None else ""
+            head_color = (colors.HexColor("#2E7D32") if (q.get("score") or 0) >= 7 else
+                          colors.HexColor("#EF6C00") if (q.get("score") or 0) >= 5 else colors.HexColor("#C62828"))
+            answer = q["answer"] if len(q["answer"]) < 420 else q["answer"][:400].rsplit(" ", 1)[0] + " ..."
+            rows = [[P(f"Q{q['index']}  {badge}", "th"), P(q["question"], "th", ltr=True)],
+                    [P(T("answer"), "tdb"), P(answer, "td", ltr=True)]]
+            if q.get("what_went_well"):
+                rows.append([P(T("went_well"), "tdb"), P(q["what_went_well"], "td")])
+            if q.get("what_to_improve"):
+                rows.append([P(T("to_improve"), "tdb"), P(q["what_to_improve"], "td")])
+            if q.get("improved_answer"):
+                rows.append([P(T("better_answer"), "tdb"), P(q["improved_answer"], "td", ltr=True)])
+            t = rb.table(rows, [1.35 * inch, W - 1.35 * inch], zebra=False)
+            t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), head_color)]))
+            if q.get("what_went_well"):
+                t.setStyle(TableStyle([("BACKGROUND", (0, 2), (-1, 2), GOOD_BG)]))
+            if q.get("what_to_improve"):
+                t.setStyle(TableStyle([("BACKGROUND", (0, 3), (-1, 3), BAD_BG)]))
+            story += [KeepTogether([t]), Spacer(1, 0.14 * inch)]
 
     # ---- Competencies ------------------------------------------------------------------
     if ev.get("strengths") or ev.get("weaknesses"):
         story.append(PageBreak())
-        story.append(_p("Competency Evaluation", h1))
+        story.append(P(T("competency_title"), "h1"))
     if ev.get("strengths"):
-        story.append(_p("Strengths", h2))
-        rows = [[_p("Competency", th), _p("Assessment and evidence", th)]]
+        story.append(P(T("strengths"), "h2"))
+        rows = [[P(T("competency"), "th"), P(T("assessment"), "th")]]
         for s in ev["strengths"]:
-            rows.append([_p(s["competency"], tdb),
-                         Paragraph(f"{escape(s['explanation'])}<br/><font color='#5B6573'><i>Evidence: {escape(s['evidence'])}</i></font>", td)])
-        t = _table(rows, [1.7 * inch, 5.1 * inch], zebra=False)
-        t.setStyle(TableStyle([("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#EEF8EF"))]))
-        story += [t, Spacer(1, 0.15 * inch)]
+            rows.append([P(s["competency"], "tdb"),
+                         [P(s["explanation"], "td"), P(f"{T('evidence')}: {s['evidence']}", "small")]])
+        story += [rb.table(rows, [1.7 * inch, W - 1.7 * inch], bg=GOOD_BG), Spacer(1, 0.15 * inch)]
     if ev.get("weaknesses"):
-        story.append(_p("Development areas", h2))
-        rows = [[_p("Area", th), _p("Actionable feedback", th)]]
-        for w in ev["weaknesses"]:
-            rows.append([_p(w["area"], tdb), _p(w["feedback"], td)])
-        t = _table(rows, [1.7 * inch, 5.1 * inch], zebra=False)
-        t.setStyle(TableStyle([("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#FDF1F1"))]))
-        story += [t, Spacer(1, 0.15 * inch)]
+        story.append(P(T("dev_areas"), "h2"))
+        rows = [[P(T("area"), "th"), P(T("feedback"), "th")]]
+        rows += [[P(w["area"], "tdb"), P(w["feedback"], "td")] for w in ev["weaknesses"]]
+        story += [rb.table(rows, [1.7 * inch, W - 1.7 * inch], bg=BAD_BG), Spacer(1, 0.15 * inch)]
 
-    # ---- Role fit, recommendations, next steps -------------------------------------------
+    # ---- Role fit, recommendations, next steps -----------------------------------------
     if ev.get("role_fit") or ev.get("recommendations") or ev.get("next_steps"):
         story.append(PageBreak())
     if ev.get("role_fit"):
-        story.append(_p("Role Fit & Potential", h1))
+        story.append(P(T("role_fit"), "h1"))
         bullets(ev["role_fit"])
     if ev.get("recommendations"):
-        story.append(_p("Recommendations for the Candidate", h1))
-        rows = [[_p("Area", th), _p("Recommendation", th), _p("How to practice", th)]]
-        for r in ev["recommendations"]:
-            rows.append([_p(r["category"], tdb), _p(r["recommendation"], td), _p(r["how_to"], td)])
-        story += [_table(rows, [1.4 * inch, 2.6 * inch, 2.8 * inch]), Spacer(1, 0.15 * inch)]
+        story.append(P(T("recs"), "h1"))
+        rows = [[P(T("rec_area"), "th"), P(T("recommendation"), "th"), P(T("how_to"), "th")]]
+        rows += [[P(T(r["category"]), "tdb"), P(r["recommendation"], "td"), P(r["how_to"], "td")]
+                 for r in ev["recommendations"]]
+        story += [rb.table(rows, [1.4 * inch, 2.6 * inch, W - 4.0 * inch]), Spacer(1, 0.15 * inch)]
     if ev.get("next_steps"):
-        story.append(KeepTogether([_p("Next Steps for Hiring Managers", h1)]))
+        story.append(P(T("next_steps"), "h1"))
         bullets(ev["next_steps"])
 
-    # ---- Appendix: transcript -----------------------------------------------------------
+    # ---- Appendix: transcript (always left-to-right, it's the original English) ----------
     story.append(PageBreak())
-    story.append(_p("Appendix: Annotated Transcript", h1))
-    story.append(_p("Speaker roles were assigned automatically by the role classifier.", small))
-    rows = [[_p("Time", th), _p("Role", th), _p("Text", th)]]
+    story.append(P(T("appendix"), "h1"))
+    story.append(P(T("appendix_note"), "small"))
+    rows = [[P(T("time"), "th"), P(T("role"), "th"), P(T("text"), "th")]]
     for u in analysis["transcript"]:
         m, s = divmod(int(u["start"] / 1000), 60)
-        rows.append([_p(f"{m:02d}:{s:02d}", td), _p(u["role"], tdb), _p(u["text"], td)])
-    story.append(_table(rows, [0.6 * inch, 1.0 * inch, 5.2 * inch]))
-
+        rows.append([P(f"{m:02d}:{s:02d}", "td"), P(T(u["role"]), "tdb"), P(u["text"], "td", ltr=True)])
+    story.append(rb.table(rows, [0.6 * inch, 1.0 * inch, W - 1.6 * inch]))
     if not ev.get("ai_generated", True):
-        story += [Spacer(1, 0.2 * inch),
-                  _p("Note: AI content evaluation was unavailable for this run, so sections that depend on it were omitted.", small)]
+        story += [Spacer(1, 0.2 * inch), P(T("ai_unavailable"), "small")]
 
     doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
     logger.info("PDF report written to %s", output_path)
@@ -928,8 +1296,9 @@ def convert_to_serializable(obj):
 
 
 def process_interview(audio_path: str, user_id: str = "candidate", output_dir: str = OUTPUT_DIR,
-                      progress=None) -> Dict:
+                      progress=None, lang: str = "en") -> Dict:
     """Run the full pipeline. Returns paths to the PDF and JSON reports plus a short summary."""
+    lang = lang if lang in LABELS else "en"
 
     def step(msg):
         logger.info(msg)
@@ -960,32 +1329,25 @@ def process_interview(audio_path: str, user_id: str = "candidate", output_dir: s
         for label, info in speakers.items():
             info["role"] = roles.get(label, "Interviewee")
         clean_utts = [{
-            "speaker": speakers[u["speaker"]]["speaker_name"],
-            "label": u["speaker"],
-            "role": speakers[u["speaker"]]["role"],
-            "start": u["start"], "end": u["end"],
-            "text": u["text"],
-            "confidence": round(float(u.get("confidence", 0)), 3),
-            "prosodic_features": u["prosodic_features"],
+            "speaker": speakers[u["speaker"]]["speaker_name"], "label": u["speaker"],
+            "role": speakers[u["speaker"]]["role"], "start": u["start"], "end": u["end"], "text": u["text"],
+            "confidence": round(float(u.get("confidence", 0)), 3), "prosodic_features": u["prosodic_features"],
         } for u in utterances]
 
         step("Analyzing the interviewee's voice")
         voice = analyze_interviewee_voice(y, sr, clean_utts)
 
         analysis = {
-            "user_id": user_id,
-            "generated_at": time.strftime("%B %d, %Y"),
-            "interview": {
-                "duration_seconds": round(len(y) / sr, 1),
-                "speaker_turns": len(clean_utts),
-                "language": transcript.get("language_code", "en"),
-            },
-            "speakers": speakers,
-            "voice_analysis": voice,
-            "transcript": clean_utts,
+            "user_id": user_id, "language": lang,
+            "generated_at": time.strftime("%Y-%m-%d"),
+            "interview": {"duration_seconds": round(len(y) / sr, 1), "speaker_turns": len(clean_utts),
+                          "language": transcript.get("language_code", "en")},
+            "speakers": speakers, "voice_analysis": voice, "transcript": clean_utts,
+            "qa_pairs": build_qa_pairs(clean_utts),
             "models": {
                 "transcription": "AssemblyAI universal-2",
                 "speaker_embeddings": "nvidia/speakerverification_en_titanet_large",
+                "speaker_index": "pinecone" if PINECONE_API_KEY else "built-in",
                 "role_classifier": "RandomForest (TF-IDF + handcrafted), trained on MIT interview transcripts",
                 "role_classifier_heldout_accuracy": getattr(get_role_classifier(), "heldout_accuracy_", None),
                 "evaluation": GEMINI_MODEL if GEMINI_API_KEY else None,
@@ -993,36 +1355,158 @@ def process_interview(audio_path: str, user_id: str = "candidate", output_dir: s
         }
 
         step("Generating AI evaluation")
-        evaluation = generate_evaluation(analysis)
+        evaluation = generate_evaluation(analysis, lang)
         if evaluation is None:
-            evaluation = fallback_evaluation(analysis)
+            evaluation = fallback_evaluation(analysis, lang)
         else:
             evaluation["ai_generated"] = True
+            by_index = {q.get("index"): q for q in evaluation.get("questions", [])}
+            for p in analysis["qa_pairs"]:
+                fb = by_index.get(p["index"], {})
+                p.update({k: fb.get(k) for k in ("score", "what_went_well", "what_to_improve", "improved_answer")})
+                if p.get("score") is not None:
+                    p["score"] = int(max(0, min(10, p["score"])))
+        evaluation.pop("questions", None)
         analysis["evaluation"] = evaluation
+        provisional = evaluation.get("content_score") is None
         analysis["suitability_score"] = calculate_acceptance_probability(voice, evaluation.get("content_score"))
-        analysis["verdict"] = (verdict_for(analysis["suitability_score"]) if evaluation.get("content_score") is not None
-                               else "Provisional: based on vocal delivery only (answer content was not evaluated).")
+        analysis["verdict"] = verdict_for(analysis["suitability_score"], lang, provisional)
 
         step("Building PDF report")
         base = f"{user_id}_{uuid.uuid4().hex[:8]}"
         os.makedirs(output_dir, exist_ok=True)
         pdf_path = os.path.abspath(os.path.join(output_dir, f"{base}_report.pdf"))
         json_path = os.path.abspath(os.path.join(output_dir, f"{base}_analysis.json"))
-        create_pdf_report(analysis, pdf_path)
+        create_pdf_report(analysis, pdf_path, lang)
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(convert_to_serializable(analysis), f, indent=2, ensure_ascii=False)
 
         step("Done")
-        return {
-            "pdf_path": pdf_path,
-            "json_path": json_path,
-            "suitability_score": analysis["suitability_score"],
-            "verdict": analysis["verdict"],
-            "summary": evaluation.get("executive_summary", []),
-            "voice": voice.get("interpretation", {}),
-        }
+        return {"pdf_path": pdf_path, "json_path": json_path, "suitability_score": analysis["suitability_score"],
+                "verdict": analysis["verdict"], "summary": evaluation.get("executive_summary", []),
+                "voice": voice.get("interpretation", {}), "lang": lang}
     finally:
         if wav_file and os.path.exists(wav_file):
+            os.remove(wav_file)
+
+
+# --------------------------------------------------------------------------------------
+# Practice mode: one question, one recorded answer, instant feedback
+# --------------------------------------------------------------------------------------
+QUESTION_BANK = {
+    "General": [
+        "Tell me about yourself.",
+        "Why are you interested in this role?",
+        "Where do you see yourself in five years?",
+        "What are your greatest strengths?",
+        "What is your biggest weakness, and how are you working on it?",
+        "Why should we hire you?",
+    ],
+    "Behavioral": [
+        "Tell me about a time you faced a difficult challenge at work or university. How did you handle it?",
+        "Describe a situation where you disagreed with a teammate. What did you do?",
+        "Tell me about a time you made a mistake. What did you learn?",
+        "Give an example of a time you led a team or took initiative.",
+        "Describe a time you had to meet a tight deadline.",
+        "Tell me about a time you had to learn something new quickly.",
+    ],
+    "Data Engineering": [
+        "Explain the difference between batch and stream processing, and when you would use each.",
+        "How would you design a data pipeline that ingests data from several sources into a data warehouse?",
+        "What is the difference between a data lake and a data warehouse?",
+        "How do you make sure the data in your pipeline is accurate and of good quality?",
+        "Explain how Apache Spark processes data in a distributed way.",
+        "What role does Apache Kafka play in a real-time data architecture?",
+    ],
+    "Software Engineering": [
+        "How do you design a REST API that other teams will rely on?",
+        "Describe how you debug a problem that only happens in production.",
+        "What is the difference between a process and a thread?",
+        "How do you approach writing tests for your code?",
+        "Tell me about a technical decision you made and the trade-offs you considered.",
+        "How would you scale a web service that is getting slow under load?",
+    ],
+    "AI / Machine Learning": [
+        "Explain overfitting and how you prevent it.",
+        "How would you evaluate a classification model on an imbalanced dataset?",
+        "Walk me through a machine learning project you built from data to deployment.",
+        "What is the difference between supervised and unsupervised learning?",
+        "How would you explain a model's prediction to a non-technical stakeholder?",
+        "What are embeddings and where have you used them?",
+    ],
+}
+
+PRACTICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "score": {"type": "integer", "description": "0-10 overall quality of the answer"},
+        "relevance": {"type": "string", "enum": ["on_topic", "partially", "off_topic"]},
+        "summary": {"type": "string"},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "improvements": {"type": "array", "items": {"type": "string"}},
+        "delivery_tip": {"type": "string"},
+        "improved_answer": {"type": "string"},
+    },
+    "required": ["score", "relevance", "summary", "strengths", "improvements", "delivery_tip", "improved_answer"],
+}
+
+
+def generate_practice_questions(role: str, count: int = 5) -> List[str]:
+    role = (role or "").strip()[:80]
+    if not role:
+        return []
+    result = _gemini_json(
+        f"Write {count} realistic job interview questions for a candidate applying as: {role}.\n"
+        "Mix behavioral and role-specific technical questions, suitable for an entry-level to mid-level "
+        "candidate. Each question should be answerable in 1-2 minutes. Write them in English.",
+        {"type": "object", "properties": {"questions": {"type": "array", "items": {"type": "string"}}},
+         "required": ["questions"]}, temperature=0.8)
+    return [q.strip() for q in (result or {}).get("questions", []) if q.strip()][:count]
+
+
+def evaluate_practice_answer(audio_path: str, question: str, lang: str = "en", role: str = "") -> Dict:
+    lang = lang if lang in LABELS else "en"
+    wav_file = convert_to_wav(audio_path)
+    try:
+        y, sr = librosa.load(wav_file, sr=16000)
+        if len(y) < sr:
+            raise ValueError("The recording is too short. Please answer for at least a few seconds.")
+        transcript = transcribe(wav_file, speakers_expected=None, diarize=False)
+        words = transcript.get("words") or []
+        text = (transcript.get("text") or "").strip()
+        if not words or not text:
+            raise ValueError("No speech was detected. Check your microphone and try again.")
+        start, end = words[0]["start"], words[-1]["end"]
+        utt = {"role": "Interviewee", "start": start, "end": end, "text": text,
+               "prosodic_features": extract_prosodic_features(y, sr, start, end)}
+        voice = analyze_interviewee_voice(y, sr, [utt])
+        metrics = {k: voice.get(k) for k in ("speaking_rate", "filler_ratio", "filler_words", "interpretation")}
+        feedback = _gemini_json(
+            f"""You are an encouraging but honest interview coach. A candidate{f' applying for: {role}' if role else ''}
+answered one interview question out loud. Evaluate the answer.
+
+- Judge relevance, structure (e.g. STAR), specificity and impact. Be concrete and kind.
+- 2-4 strengths and 2-4 improvements, each one sentence.
+- delivery_tip: one tip based on the voice metrics (pace, filler words, confidence).
+- improved_answer: a stronger version (4-6 sentences, first person) that keeps the candidate's own facts;
+  use placeholders like [number] where a detail is missing. Keep it in English.
+{_language_rule(lang)}
+Question: {question}
+Answer (transcribed): {text}
+Answer length: {(end - start) / 1000:.0f} seconds
+Voice metrics: {json.dumps(metrics)}
+""", PRACTICE_SCHEMA)
+        if feedback:
+            feedback["score"] = int(max(0, min(10, feedback.get("score", 0))))
+            feedback["ai_generated"] = True
+        else:
+            feedback = {"ai_generated": False, "score": None, "summary": fallback_evaluation(
+                {"voice_analysis": voice}, lang)["communication"][0] if "error" not in voice else "",
+                "strengths": [], "improvements": [], "delivery_tip": "", "improved_answer": "", "relevance": None}
+        return {"question": question, "transcript": text, "duration_seconds": round((end - start) / 1000, 1),
+                "voice": voice, "feedback": feedback, "lang": lang}
+    finally:
+        if os.path.exists(wav_file):
             os.remove(wav_file)
 
 
@@ -1030,7 +1514,8 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("usage: python process_interview.py <audio-file> [user_id]")
+        print("usage: python process_interview.py <audio-file> [user_id] [en|ar]")
         sys.exit(1)
-    out = process_interview(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "candidate")
-    print(json.dumps(out, indent=2))
+    out = process_interview(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "candidate",
+                            lang=sys.argv[3] if len(sys.argv) > 3 else "en")
+    print(json.dumps(out, indent=2, ensure_ascii=False))

@@ -28,7 +28,12 @@ flowchart LR
 
 ### Audio analysis service ([`audio_analysis/`](audio_analysis/))
 
-A FastAPI service, deployed with Docker on Hugging Face Spaces, that turns a full interview recording into a candidate report. It also has a web page where anyone can upload a recording and try it.
+A FastAPI service, deployed with Docker on Hugging Face Spaces, that turns a full interview recording into a candidate report, with a web page in English and Arabic:
+
+- **Analyze an interview:** upload a recording (or try the built-in sample) and get a suitability score, per-question scores and feedback with a stronger example answer, voice metrics, and a transcript synced to the audio, plus a PDF report (English, or right-to-left Arabic) and JSON
+- **Practice mode:** pick a question or generate questions for any job title, record an answer with the microphone, and get instant feedback
+
+The pipeline:
 
 1. Audio conversion to 16 kHz mono WAV (ffmpeg)
 2. Speech-to-text with speaker diarization (AssemblyAI)
@@ -36,8 +41,9 @@ A FastAPI service, deployed with Docker on Hugging Face Spaces, that turns a ful
 4. Speaker identification: NVIDIA NeMo TitaNet embeddings matched by cosine similarity against a vector index (Pinecone, or a built-in NumPy index)
 5. Role classification (interviewer vs. interviewee): Random Forest trained on ~3,000 labeled utterances from the MIT Interview dataset (~92% held-out accuracy), aggregated per speaker
 6. Voice analysis: speaking rate, filler words, repetition, pitch, jitter/shimmer, and confidence / anxiety / hesitation scores
-7. Evaluation: Gemini returns a structured assessment (strengths with evidence, development areas, role fit, recommendations, content score)
-8. Report: multi-page PDF with charts and an annotated transcript (ReportLab, Matplotlib), plus JSON
+7. Question pairing: groups the transcript into question/answer pairs
+8. Evaluation: Gemini returns a structured assessment in English or Arabic (per-question score and feedback, strengths with evidence, development areas, role fit, recommendations, content score)
+9. Report: multi-page PDF with charts, per-question feedback and an annotated transcript (ReportLab, Matplotlib; Arabic shaping with arabic-reshaper and python-bidi), plus JSON
 
 **Live demo:** [huggingface.co/spaces/EvalBot/Audio-EvalBot](https://huggingface.co/spaces/EvalBot/Audio-EvalBot). It's on free hardware, so the first request after it has been idle takes a minute to wake it up.
 

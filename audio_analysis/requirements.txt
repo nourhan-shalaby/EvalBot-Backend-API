@@ -24,3 +24,5 @@ fastapi
 uvicorn[standard]
 python-multipart
 requests
+arabic-reshaper
+python-bidi

@@ -4,8 +4,12 @@ Endpoints
   GET  /                      Web demo: upload an interview recording and get the report
   GET  /health                Health check (also reports which services are configured)
   POST /process-audio         Synchronous API used by the EvalBot backend/mobile app
-  POST /jobs                  Start an analysis in the background (used by the web demo)
+  POST /jobs                  Start an analysis in the background (used by the web demo; sample=true uses the demo interview)
   GET  /jobs/{job_id}         Poll job status / result
+  GET  /practice/questions    Built-in practice question bank
+  POST /practice/generate     AI-generated questions for a given role
+  POST /practice              Evaluate one recorded answer to one question (instant feedback)
+  GET  /sample.mp3            The demo interview recording
   GET  /static/outputs/pdf/{filename}, /static/outputs/json/{filename}   Download reports
 """
 import logging
@@ -46,6 +50,9 @@ _pipeline_lock = threading.Semaphore(int(os.getenv("MAX_CONCURRENT_JOBS", "1")))
 @app.on_event("startup")
 def warm_up():
     threading.Thread(target=pipeline.load_models, daemon=True).start()
+
+
+SAMPLE_AUDIO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sample_interview.mp3")
 
 
 class ProcessResponse(BaseModel):
@@ -98,10 +105,20 @@ def _save_input(user_id: str, file_url: Optional[str], file: Optional[UploadFile
     return local_path
 
 
-def _run(local_path: str, user_id: str, progress=None) -> Dict:
+def _lang(value: Optional[str]) -> str:
+    return "ar" if (value or "").lower().startswith("ar") else "en"
+
+
+def _copy_sample(user_id: str) -> str:
+    local_path = os.path.join(TEMP_DIR, f"{user_id}_{uuid.uuid4().hex}.mp3")
+    shutil.copy(SAMPLE_AUDIO, local_path)
+    return local_path
+
+
+def _run(local_path: str, user_id: str, progress=None, lang: str = "en") -> Dict:
     with _pipeline_lock:
         try:
-            result = pipeline.process_interview(local_path, user_id=user_id, progress=progress)
+            result = pipeline.process_interview(local_path, user_id=user_id, progress=progress, lang=lang)
         finally:
             if os.path.exists(local_path):
                 os.remove(local_path)
@@ -120,6 +137,7 @@ def _run(local_path: str, user_id: str, progress=None) -> Dict:
         "json_url": f"{BASE_URL}/static/outputs/json/{json_name}",
         "pdf_path": f"/static/outputs/pdf/{pdf_name}",
         "json_path": f"/static/outputs/json/{json_name}",
+        "lang": result["lang"],
     }
 
 
@@ -130,11 +148,11 @@ def health():
 
 @app.post("/process-audio", response_model=ProcessResponse)
 def process_audio(user_id: str = Form(...), file_url: Optional[str] = Form(None),
-                  file: Optional[UploadFile] = File(None)):
+                  file: Optional[UploadFile] = File(None), lang: str = Form("en")):
     user_id = _safe_id(user_id)
     local_path = _save_input(user_id, file_url, file)
     try:
-        return _run(local_path, user_id)
+        return _run(local_path, user_id, lang=_lang(lang))
     except HTTPException:
         raise
     except Exception as e:
@@ -144,9 +162,10 @@ def process_audio(user_id: str = Form(...), file_url: Optional[str] = Form(None)
 
 @app.post("/jobs")
 def create_job(user_id: str = Form("candidate"), file_url: Optional[str] = Form(None),
-               file: Optional[UploadFile] = File(None)):
+               file: Optional[UploadFile] = File(None), lang: str = Form("en"), sample: bool = Form(False)):
     user_id = _safe_id(user_id)
-    local_path = _save_input(user_id, file_url, file)
+    lang = _lang(lang)
+    local_path = _copy_sample(user_id) if sample else _save_input(user_id, file_url, file)
     job_id = uuid.uuid4().hex
     with _job_lock:
         _jobs[job_id] = {"status": "queued", "step": "Waiting to start", "created": time.time()}
@@ -157,7 +176,7 @@ def create_job(user_id: str = Form("candidate"), file_url: Optional[str] = Form(
 
     def worker():
         try:
-            result = _run(local_path, user_id, progress)
+            result = _run(local_path, user_id, progress, lang)
             with _job_lock:
                 _jobs[job_id].update(status="done", step="Done", result=result)
         except Exception as e:
@@ -175,6 +194,45 @@ def get_job(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+@app.get("/sample.mp3")
+def sample_audio():
+    return FileResponse(SAMPLE_AUDIO, media_type="audio/mpeg")
+
+
+@app.get("/practice/questions")
+def practice_questions():
+    return pipeline.QUESTION_BANK
+
+
+@app.post("/practice/generate")
+def practice_generate(role: str = Form(...)):
+    questions = pipeline.generate_practice_questions(role)
+    if not questions:
+        raise HTTPException(503, "Could not generate questions right now. Try one of the built-in categories.")
+    return {"role": role, "questions": questions}
+
+
+@app.post("/practice")
+def practice(question: str = Form(...), file: UploadFile = File(...), lang: str = Form("en"),
+             role: str = Form("")):
+    if not question.strip():
+        raise HTTPException(400, "Missing question")
+    if file.filename and "." not in file.filename:
+        file.filename += ".webm"
+    local_path = _save_input("practice", None, file)
+    try:
+        with _pipeline_lock:
+            return pipeline.evaluate_practice_answer(local_path, question.strip()[:500], _lang(lang), role.strip()[:80])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("Practice evaluation failed")
+        raise HTTPException(500, f"Could not evaluate the answer: {e}")
+    finally:
+        if os.path.exists(local_path):
+            os.remove(local_path)
 
 
 @app.get("/static/outputs/{kind}/{filename}")

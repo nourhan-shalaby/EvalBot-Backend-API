@@ -1,154 +1,557 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EvalBot · Interview Analysis</title>
+<title>EvalBot · AI Interview Analysis</title>
 <style>
-  :root { --bg:#f5f7fb; --card:#fff; --ink:#152033; --muted:#5b6573; --brand:#0b3d91; --accent:#1f6feb; --line:#dde4ee;
-          --good:#2e7d32; --mid:#ef6c00; --bad:#c62828; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
-  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
-  h1 { margin:0 0 4px; font-size: 28px; color: var(--brand); }
-  .lead { color: var(--muted); margin: 0 0 24px; line-height: 1.5; }
-  .card { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px; text-align:center; cursor:pointer; transition: .15s; }
-  .drop.over, .drop:hover { border-color: var(--accent); background: #f0f6ff; }
-  .drop strong { color: var(--accent); }
-  input[type=text] { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:15px; margin-top:6px; }
-  label { font-size: 14px; color: var(--muted); }
-  button { background: var(--accent); color:#fff; border:0; border-radius:8px; padding: 12px 18px; font-size:15px; font-weight:600; cursor:pointer; width:100%; margin-top:14px; }
-  button:disabled { opacity:.5; cursor:default; }
-  .steps { list-style:none; padding:0; margin: 8px 0 0; }
-  .steps li { padding: 6px 0; color: var(--muted); display:flex; gap:10px; align-items:center; }
-  .steps li.done { color: var(--ink); } .steps li.done::before { content:"✓"; color: var(--good); font-weight:700; }
-  .steps li.active { color: var(--ink); font-weight:600; } .steps li.active::before { content:"●"; color: var(--accent); animation: pulse 1s infinite; }
+  :root {
+    --bg:#f4f6fa; --card:#fff; --ink:#152033; --muted:#5b6573; --line:#dde4ee; --soft:#eef3fb;
+    --brand:#0b3d91; --accent:#1f6feb; --accent-ink:#fff; --good:#2e7d32; --good-bg:#eaf6ec;
+    --mid:#ef6c00; --mid-bg:#fff3e6; --bad:#c62828; --bad-bg:#fdeeee; --hl:#fff7d6; --shadow:0 1px 2px rgba(16,24,40,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1420; --card:#161e2c; --ink:#e7ecf4; --muted:#9aa6b8; --line:#2a3548; --soft:#1c2738;
+      --brand:#8fb4ff; --accent:#4c8dff; --good:#5cc06a; --good-bg:#16301d; --mid:#ffa24c; --mid-bg:#33240f;
+      --bad:#ff6b6b; --bad-bg:#3a1919; --hl:#3a3313; --shadow:none; }
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Arabic", Tahoma, sans-serif;
+         background:var(--bg); color:var(--ink); line-height:1.5; }
+  main { max-width: 860px; margin:0 auto; padding: 24px 16px 64px; }
+  header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:28px; color:var(--brand); letter-spacing:-.01em; }
+  .tagline { color:var(--muted); margin:4px 0 0; }
+  .lang { display:flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; background:var(--card); }
+  .lang button { border:0; background:none; padding:6px 14px; cursor:pointer; color:var(--muted); font:inherit; font-size:14px; }
+  .lang button.on { background:var(--accent); color:var(--accent-ink); }
+  .tabs { display:flex; gap:6px; margin:20px 0 14px; border-bottom:1px solid var(--line); }
+  .tabs button { border:0; background:none; padding:10px 14px; font:inherit; font-weight:600; color:var(--muted); cursor:pointer;
+                 border-bottom:3px solid transparent; margin-bottom:-1px; }
+  .tabs button.on { color:var(--accent); border-color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:14px; box-shadow:var(--shadow); }
+  .card h2 { font-size:17px; margin:0 0 12px; color:var(--brand); }
+  .card h3 { font-size:15px; margin:16px 0 8px; }
+  .drop { border:2px dashed var(--line); border-radius:12px; padding:24px; text-align:center; cursor:pointer; transition:.15s; }
+  .drop.over, .drop:hover { border-color:var(--accent); background:var(--soft); }
+  .drop strong { color:var(--accent); }
+  .hint { color:var(--muted); font-size:13px; }
+  label { font-size:14px; color:var(--muted); display:block; margin-bottom:4px; }
+  input[type=text], select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:9px; font:inherit; font-size:15px;
+                             background:var(--card); color:var(--ink); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .row > * { flex:1 1 200px; }
+  .btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:9px; padding:11px 16px; font:inherit; font-size:15px;
+         font-weight:600; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px; }
+  .btn.ghost { background:none; color:var(--accent); border:1px solid var(--accent); }
+  .btn.rec { background:var(--bad); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .btns { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+  .btns .btn { flex:1 1 180px; }
+  .steps { list-style:none; padding:0; margin:6px 0 0; }
+  .steps li { padding:5px 0; color:var(--muted); display:flex; gap:10px; align-items:center; }
+  .steps li::before { width:18px; text-align:center; }
+  .steps li.done { color:var(--ink); } .steps li.done::before { content:"✓"; color:var(--good); font-weight:700; }
+  .steps li.active { color:var(--ink); font-weight:600; } .steps li.active::before { content:"●"; color:var(--accent); animation:pulse 1s infinite; }
   .steps li.todo::before { content:"○"; }
   @keyframes pulse { 50% { opacity:.3 } }
-  .score { display:flex; gap:20px; align-items:center; }
-  .score .num { font-size: 48px; font-weight: 800; }
-  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-  .chip { background: var(--bg); border:1px solid var(--line); border-radius:999px; padding:4px 12px; font-size:13px; }
-  .links { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
-  .links a { flex:1; text-align:center; text-decoration:none; padding:10px; border-radius:8px; border:1px solid var(--accent); color:var(--accent); font-weight:600; min-width: 140px; }
-  .links a.primary { background: var(--accent); color:#fff; }
-  ul.summary { padding-left: 18px; line-height:1.55; }
-  .err { color: var(--bad); white-space: pre-wrap; }
-  .hidden { display:none; }
-  footer { color: var(--muted); font-size: 13px; margin-top: 24px; line-height: 1.6; }
-  code { background:#eef2f8; padding:1px 5px; border-radius:4px; }
+  .score-wrap { display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+  .ring { width:110px; height:110px; flex:none; }
+  .ring text { font-weight:800; fill:var(--ink); }
+  .verdict { font-weight:600; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .chip { background:var(--soft); border:1px solid var(--line); border-radius:999px; padding:3px 11px; font-size:13px; }
+  .bars { display:grid; gap:10px; }
+  .bar { display:grid; grid-template-columns: 110px 1fr 46px; gap:10px; align-items:center; font-size:14px; }
+  .bar .track { height:10px; background:var(--soft); border-radius:99px; overflow:hidden; }
+  .bar .fill { height:100%; border-radius:99px; }
+  .metrics { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin-top:14px; }
+  .metric { background:var(--soft); border-radius:10px; padding:10px 12px; }
+  .metric b { display:block; font-size:18px; }
+  .metric span { color:var(--muted); font-size:13px; }
+  details.q { border:1px solid var(--line); border-radius:11px; margin-bottom:10px; background:var(--card); }
+  details.q summary { list-style:none; cursor:pointer; padding:12px 14px; display:flex; gap:12px; align-items:flex-start; }
+  details.q summary::-webkit-details-marker { display:none; }
+  .badge { flex:none; font-weight:700; font-size:13px; border-radius:8px; padding:3px 8px; color:#fff; min-width:48px; text-align:center; }
+  .qbody { padding:0 14px 14px; display:grid; gap:10px; }
+  .box { border-radius:9px; padding:10px 12px; font-size:14px; }
+  .box h4 { margin:0 0 4px; font-size:13px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+  .box.good { background:var(--good-bg); } .box.bad { background:var(--bad-bg); } .box.plain { background:var(--soft); }
+  .en { direction:ltr; text-align:left; unicode-bidi:isolate; }
+  ul.list { margin:0; padding-inline-start:20px; }
+  ul.list li { margin:4px 0; }
+  .two { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  @media (max-width: 640px) { .two { grid-template-columns:1fr; } .bar { grid-template-columns: 90px 1fr 40px; } }
+  .player { position:sticky; top:0; background:var(--card); padding:8px 0; z-index:2; }
+  audio { width:100%; }
+  .tx { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+  .line { display:grid; grid-template-columns: 52px 92px 1fr; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); cursor:pointer; font-size:14px; }
+  .line:hover { background:var(--soft); }
+  .line.now { background:var(--hl); }
+  .line .t { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .line .r { font-weight:600; }
+  .line .r.Interviewer { color:var(--accent); } .line .r.Interviewee { color:var(--good); }
+  .downloads { display:flex; gap:10px; flex-wrap:wrap; }
+  .downloads a { flex:1 1 180px; text-align:center; text-decoration:none; padding:10px; border-radius:9px; border:1px solid var(--accent);
+                 color:var(--accent); font-weight:600; }
+  .downloads a.primary { background:var(--accent); color:var(--accent-ink); }
+  .qcard { background:var(--soft); border-radius:12px; padding:16px; font-size:18px; font-weight:600; }
+  .qmeta { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .timer { font-variant-numeric:tabular-nums; font-weight:700; }
+  .err { color:var(--bad); white-space:pre-wrap; }
+  .hidden { display:none !important; }
+  .session { font-size:14px; }
+  .session li { display:flex; justify-content:space-between; gap:10px; }
+  footer { color:var(--muted); font-size:13px; margin-top:28px; }
+  code { background:var(--soft); padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  .sr { position:absolute; left:-9999px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>EvalBot</h1>
-  <p class="lead">Upload a recorded job interview (English). EvalBot transcribes it, tells the interviewer and candidate apart,
-    analyzes the candidate's voice, and generates a full PDF evaluation report. Processing takes about 1–3 minutes.</p>
-
-  <div class="card" id="form-card">
-    <div class="drop" id="drop">
-      <div><strong>Choose an audio file</strong> or drag it here</div>
-      <div style="color:var(--muted);font-size:13px;margin-top:6px">WAV, MP3, M4A, FLAC, OGG, WEBM · up to 100 MB</div>
-      <div id="fname" style="margin-top:10px;font-weight:600"></div>
-      <input type="file" id="file" accept="audio/*,video/mp4,video/webm" hidden>
+  <header>
+    <div>
+      <h1>EvalBot</h1>
+      <p class="tagline" data-i="tagline"></p>
     </div>
-    <div style="margin-top:14px">
-      <label for="uid">Candidate ID (optional)</label>
-      <input type="text" id="uid" placeholder="e.g. candidate_42">
+    <div class="lang" role="group" aria-label="Language">
+      <button data-lang="en" class="on">English</button><button data-lang="ar">العربية</button>
     </div>
-    <button id="go" disabled>Analyze interview</button>
-  </div>
+  </header>
 
-  <div class="card hidden" id="progress-card">
-    <strong>Analyzing…</strong>
-    <ul class="steps" id="steps"></ul>
-  </div>
+  <nav class="tabs" role="tablist">
+    <button data-tab="analyze" class="on" data-i="tab_analyze"></button>
+    <button data-tab="practice" data-i="tab_practice"></button>
+  </nav>
 
-  <div class="card hidden" id="result-card"></div>
+  <!-- ============ ANALYZE ============ -->
+  <section id="analyze">
+    <div class="card" id="form-card">
+      <div class="drop" id="drop" tabindex="0">
+        <div><strong data-i="choose"></strong> <span data-i="or_drag"></span></div>
+        <div class="hint" data-i="formats"></div>
+        <div id="fname" style="margin-top:8px;font-weight:600"></div>
+        <input type="file" id="file" accept="audio/*,video/mp4,video/webm" hidden>
+      </div>
+      <div style="margin-top:12px">
+        <label for="uid" data-i="cand_id"></label>
+        <input type="text" id="uid" placeholder="candidate_42">
+      </div>
+      <div class="btns">
+        <button class="btn" id="go" disabled data-i="analyze_btn"></button>
+        <button class="btn ghost" id="sample" data-i="sample_btn"></button>
+      </div>
+      <p class="hint" data-i="sample_note" style="margin:10px 0 0"></p>
+    </div>
+
+    <div class="card hidden" id="progress-card">
+      <strong data-i="analyzing"></strong> <span class="hint" data-i="takes"></span>
+      <ul class="steps" id="steps"></ul>
+    </div>
+
+    <div id="results" class="hidden"></div>
+  </section>
+
+  <!-- ============ PRACTICE ============ -->
+  <section id="practice" class="hidden">
+    <div class="card">
+      <h2 data-i="p_title"></h2>
+      <p class="hint" data-i="p_intro" style="margin-top:-6px"></p>
+      <div class="row">
+        <div><label for="cat" data-i="category"></label><select id="cat"></select></div>
+        <div><label for="role" data-i="or_role"></label><input type="text" id="role" data-ph="role_ph"></div>
+      </div>
+      <div class="btns" style="margin-top:10px"><button class="btn ghost" id="gen" data-i="gen_btn"></button></div>
+    </div>
+
+    <div class="card">
+      <div class="qcard en" id="qtext"></div>
+      <div class="qmeta">
+        <button class="btn ghost" id="speak" data-i="listen"></button>
+        <button class="btn ghost" id="nextq" data-i="next_q"></button>
+      </div>
+      <div class="btns">
+        <button class="btn rec" id="recbtn"><span id="recl" data-i="record"></span> <span class="timer" id="timer"></span></button>
+      </div>
+      <audio id="myans" controls class="hidden" style="margin-top:12px"></audio>
+      <div class="btns"><button class="btn" id="fb" disabled data-i="get_fb"></button></div>
+      <p class="hint" id="pstatus" style="margin:10px 0 0"></p>
+    </div>
+
+    <div id="presult" class="hidden"></div>
+
+    <div class="card hidden" id="session-card">
+      <h2 data-i="session"></h2>
+      <ul class="list session" id="session"></ul>
+    </div>
+  </section>
 
   <footer>
-    Pipeline: AssemblyAI transcription & diarization · NVIDIA NeMo TitaNet speaker embeddings + Pinecone ·
-    Random Forest role classifier (trained on the MIT Interview dataset) · librosa voice analysis · Gemini evaluation · ReportLab PDF.<br>
-    API: <code>POST /process-audio</code> (form fields <code>user_id</code> + <code>file</code> or <code>file_url</code>).
-    Part of the EvalBot graduation project, Benha University.
+    <span data-i="pipeline"></span><br>
+    API: <code>POST /process-audio</code>, <code>POST /practice</code>. <span data-i="credit"></span>
   </footer>
 </main>
+
 <script>
-const STEPS = ["Converting audio","Transcribing with speaker diarization","Extracting prosodic features","Identifying speakers",
-  "Classifying interviewer and interviewee","Analyzing the interviewee's voice","Generating AI evaluation","Building PDF report"];
+const I18N = {
+  en: {
+    tagline: "AI interview analysis: upload a recorded interview, or practice answering questions out loud.",
+    tab_analyze: "Analyze an interview", tab_practice: "Practice mode",
+    choose: "Choose an audio file", or_drag: "or drag it here",
+    formats: "WAV, MP3, M4A, FLAC, OGG, WEBM · English · up to 100 MB",
+    cand_id: "Candidate ID (optional)", analyze_btn: "Analyze interview", sample_btn: "Try a sample interview",
+    sample_note: "The sample is a 2-minute mock interview for a data engineering role, voiced with text-to-speech.",
+    analyzing: "Analyzing…", takes: "usually 1-2 minutes",
+    steps: ["Converting audio","Transcribing with speaker diarization","Extracting prosodic features","Identifying speakers",
+            "Classifying interviewer and interviewee","Analyzing the interviewee's voice","Generating AI evaluation","Building PDF report"],
+    suitability: "Suitability score", content: "Content", delivery: "Delivery",
+    confidence: "Confidence", anxiety: "Anxiety", hesitation: "Hesitation", fluency: "Fluency",
+    high: "high", moderate: "moderate", low: "low", fluent: "fluent", disfluent: "disfluent",
+    voice: "Voice & delivery", rate: "Speaking rate", wps: "words/sec", fillers: "Filler words", talk: "Candidate talk time",
+    min: "min", words: "words", summary: "Summary", qa: "Question by question", answer: "Answer",
+    went_well: "What went well", improve: "What to improve", better: "A stronger answer",
+    strengths: "Strengths", weaknesses: "Development areas", evidence: "Evidence",
+    recs: "Recommendations", transcript: "Transcript", tx_hint: "Click a line to jump to that moment.",
+    pdf: "Open PDF report", json: "Download JSON", again: "Analyze another interview",
+    Interviewer: "Interviewer", Interviewee: "Candidate",
+    p_title: "Practice an interview answer",
+    p_intro: "Pick a question, listen to it, record your answer, and get instant feedback on what you said and how you said it.",
+    category: "Question category", or_role: "…or generate questions for a role", role_ph: "e.g. Junior Data Engineer",
+    gen_btn: "Generate questions for this role", listen: "🔊 Listen", next_q: "Next question",
+    record: "● Record answer", stop: "■ Stop", rerecord: "● Record again", get_fb: "Get feedback",
+    p_eval: "Evaluating your answer…", mic_err: "Microphone access is needed to record. Allow it in your browser and try again.",
+    p_score: "Answer score", relevance: {on_topic: "On topic", partially: "Partly on topic", off_topic: "Off topic"},
+    you_said: "What you said", tip: "Delivery tip", session: "This session", gen_fail: "Couldn't generate questions right now.",
+    pipeline: "Pipeline: AssemblyAI transcription & diarization · NVIDIA NeMo TitaNet speaker embeddings + vector index · Random Forest role classifier trained on the MIT Interview dataset · librosa voice analysis · Gemini evaluation · ReportLab PDF.",
+    credit: "EvalBot graduation project, Benha University.",
+    wrong: "Something went wrong", provisional: "provisional",
+  },
+  ar: {
+    tagline: "تحليل المقابلات بالذكاء الاصطناعي: ارفع تسجيل مقابلة، أو تدرّب على الإجابة بصوتك.",
+    tab_analyze: "تحليل مقابلة", tab_practice: "وضع التدريب",
+    choose: "اختر ملفاً صوتياً", or_drag: "أو اسحبه هنا",
+    formats: "WAV، MP3، M4A، FLAC، OGG، WEBM · المقابلة بالإنجليزية · حتى 100 ميجابايت",
+    cand_id: "رقم المرشّح (اختياري)", analyze_btn: "حلّل المقابلة", sample_btn: "جرّب مقابلة نموذجية",
+    sample_note: "المقابلة النموذجية مدتها دقيقتان لوظيفة مهندس بيانات، بأصوات مولّدة آلياً.",
+    analyzing: "جارٍ التحليل…", takes: "عادةً من دقيقة إلى دقيقتين",
+    steps: ["تحويل الصوت","تحويل الكلام إلى نص وتمييز المتحدثين","استخراج خصائص الصوت","التعرّف على المتحدثين",
+            "تحديد المحاوِر والمرشّح","تحليل صوت المرشّح","التقييم بالذكاء الاصطناعي","إنشاء تقرير PDF"],
+    suitability: "درجة الملاءمة", content: "المحتوى", delivery: "الأداء",
+    confidence: "الثقة", anxiety: "القلق", hesitation: "التردد", fluency: "الطلاقة",
+    high: "مرتفع", moderate: "متوسط", low: "منخفض", fluent: "طليق", disfluent: "متقطع",
+    voice: "الصوت والأداء", rate: "معدل الكلام", wps: "كلمة/ثانية", fillers: "كلمات الحشو", talk: "مدة كلام المرشّح",
+    min: "دقيقة", words: "كلمة", summary: "الملخص", qa: "تقييم كل سؤال", answer: "الإجابة",
+    went_well: "ما كان جيداً", improve: "ما يحتاج إلى تحسين", better: "إجابة أقوى",
+    strengths: "نقاط القوة", weaknesses: "مجالات التطوير", evidence: "الدليل",
+    recs: "التوصيات", transcript: "نص المقابلة", tx_hint: "اضغط على أي سطر للانتقال إلى تلك اللحظة.",
+    pdf: "افتح تقرير PDF", json: "تحميل JSON", again: "حلّل مقابلة أخرى",
+    Interviewer: "المحاوِر", Interviewee: "المرشّح",
+    p_title: "تدرّب على الإجابة",
+    p_intro: "اختر سؤالاً واستمع إليه، ثم سجّل إجابتك بالإنجليزية، وستحصل فوراً على تقييم لما قلته وطريقة قوله.",
+    category: "نوع الأسئلة", or_role: "…أو ولّد أسئلة لوظيفة معينة", role_ph: "مثال: Junior Data Engineer",
+    gen_btn: "ولّد أسئلة لهذه الوظيفة", listen: "🔊 استمع", next_q: "السؤال التالي",
+    record: "● سجّل إجابتك", stop: "■ إيقاف", rerecord: "● سجّل مرة أخرى", get_fb: "قيّم إجابتي",
+    p_eval: "جارٍ تقييم إجابتك…", mic_err: "يجب السماح باستخدام الميكروفون للتسجيل. اسمح به من المتصفح ثم حاول مرة أخرى.",
+    p_score: "درجة الإجابة", relevance: {on_topic: "مرتبطة بالسؤال", partially: "مرتبطة جزئياً", off_topic: "خارج الموضوع"},
+    you_said: "ما قلته", tip: "نصيحة للأداء", session: "هذه الجلسة", gen_fail: "تعذّر توليد الأسئلة الآن.",
+    pipeline: "المكوّنات: AssemblyAI لتحويل الكلام وتمييز المتحدثين · NVIDIA NeMo TitaNet لبصمة الصوت مع فهرس متجهات · Random Forest لتحديد الأدوار مدرّب على بيانات MIT Interview · librosa لتحليل الصوت · Gemini للتقييم · ReportLab للتقرير.",
+    credit: "مشروع تخرج EvalBot، جامعة بنها.",
+    wrong: "حدث خطأ", provisional: "مبدئي",
+  }
+};
+let lang = "en";
+try { lang = localStorage.getItem("evalbot_lang") || (navigator.language || "").startsWith("ar") && "ar" || "en"; } catch (e) {}
 const $ = id => document.getElementById(id);
-let chosen = null;
+const t = k => (I18N[lang][k] ?? I18N.en[k] ?? k);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtTime = ms => { const s = Math.floor(ms / 1000); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+const tone = (v, hi, mid) => v >= hi ? "var(--good)" : v >= mid ? "var(--mid)" : "var(--bad)";
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+  document.querySelectorAll("[data-i]").forEach(el => el.textContent = t(el.dataset.i));
+  document.querySelectorAll("[data-ph]").forEach(el => el.placeholder = t(el.dataset.ph));
+  document.querySelectorAll(".lang button").forEach(b => b.classList.toggle("on", b.dataset.lang === lang));
+  if (lastAnalysis) renderResults(lastAnalysis, lastMeta);
+  if (lastPractice) renderPractice(lastPractice);
+  if (recState === "recorded") $("recl").textContent = t("rerecord");
+}
+document.querySelectorAll(".lang button").forEach(b => b.onclick = () => {
+  lang = b.dataset.lang; try { localStorage.setItem("evalbot_lang", lang); } catch (e) {}
+  applyLang();
+});
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  $("analyze").classList.toggle("hidden", b.dataset.tab !== "analyze");
+  $("practice").classList.toggle("hidden", b.dataset.tab !== "practice");
+});
+
+/* ---------------- Analyze ---------------- */
+let chosen = null, audioUrl = null, lastAnalysis = null, lastMeta = null;
 const drop = $("drop"), input = $("file");
 drop.onclick = () => input.click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") input.click(); };
 input.onchange = () => pick(input.files[0]);
 drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); pick(e.dataTransfer.files[0]); };
-function pick(f) { if (!f) return; chosen = f; $("fname").textContent = f.name + " (" + (f.size/1048576).toFixed(1) + " MB)"; $("go").disabled = false; }
+function pick(f) { if (!f) return; chosen = f; $("fname").textContent = f.name + " (" + (f.size / 1048576).toFixed(1) + " MB)"; $("go").disabled = false; }
 
 function renderSteps(current, done) {
-  const idx = STEPS.indexOf(current);
-  $("steps").innerHTML = STEPS.map((s, i) => {
-    const cls = done || (idx >= 0 && i < idx) ? "done" : i === idx ? "active" : "todo";
-    return `<li class="${cls}">${s}</li>`;
-  }).join("");
+  const steps = I18N[lang].steps, idx = I18N.en.steps.indexOf(current);
+  $("steps").innerHTML = steps.map((s, i) => `<li class="${done || (idx >= 0 && i < idx) ? "done" : i === idx ? "active" : "todo"}">${s}</li>`).join("");
 }
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-
-$("go").onclick = async () => {
-  $("go").disabled = true;
-  $("result-card").classList.add("hidden");
+async function start(useSample) {
+  $("go").disabled = $("sample").disabled = true;
+  $("results").classList.add("hidden");
   $("progress-card").classList.remove("hidden");
-  renderSteps("Uploading", false);
+  renderSteps("", false);
   const fd = new FormData();
-  fd.append("file", chosen);
-  fd.append("user_id", $("uid").value || "candidate");
+  if (useSample) { fd.append("sample", "true"); audioUrl = "sample.mp3"; }
+  else { fd.append("file", chosen); if (audioUrl && audioUrl.startsWith("blob:")) URL.revokeObjectURL(audioUrl); audioUrl = URL.createObjectURL(chosen); }
+  fd.append("user_id", $("uid").value || (useSample ? "sample_candidate" : "candidate"));
+  fd.append("lang", lang);
   try {
     const r = await fetch("jobs", { method: "POST", body: fd });
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || "Upload failed");
     poll(j.job_id);
   } catch (e) { fail(e.message); }
-};
+}
+$("go").onclick = () => start(false);
+$("sample").onclick = () => start(true);
 
 async function poll(id) {
   try {
-    const r = await fetch("jobs/" + id);
-    const j = await r.json();
-    if (j.status === "done") return show(j.result);
+    const r = await fetch("jobs/" + id), j = await r.json();
+    if (j.status === "done") {
+      const a = await (await fetch(j.result.json_path.replace(/^\//, ""))).json();
+      lastAnalysis = a; lastMeta = j.result;
+      $("progress-card").classList.add("hidden");
+      renderResults(a, j.result);
+      $("go").disabled = !chosen; $("sample").disabled = false;
+      $("results").scrollIntoView({ behavior: "smooth" });
+      return;
+    }
     if (j.status === "error") return fail(j.error);
     renderSteps(j.step, false);
-    setTimeout(() => poll(id), 2000);
-  } catch (e) { setTimeout(() => poll(id), 4000); }
-}
-
-function show(res) {
-  renderSteps("", true);
-  $("progress-card").classList.add("hidden");
-  const s = res.suitability_score;
-  const color = s >= 65 ? "var(--good)" : s >= 50 ? "var(--mid)" : "var(--bad)";
-  const v = res.voice || {};
-  $("result-card").innerHTML = `
-    <div class="score"><div class="num" style="color:${color}">${Math.round(s)}<span style="font-size:18px;color:var(--muted)">/100</span></div>
-      <div><strong>Suitability score</strong><div style="color:var(--muted)">${esc(res.verdict)}</div></div></div>
-    <div class="chips">
-      ${v.confidence_level ? `<span class="chip">Confidence: ${esc(v.confidence_level)}</span>` : ""}
-      ${v.anxiety_level ? `<span class="chip">Anxiety: ${esc(v.anxiety_level)}</span>` : ""}
-      ${v.fluency_level ? `<span class="chip">Fluency: ${esc(v.fluency_level)}</span>` : ""}
-    </div>
-    <ul class="summary">${(res.executive_summary || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
-    <div class="links"><a class="primary" href="${res.pdf_path}" target="_blank">Open PDF report</a>
-      <a href="${res.json_path}" target="_blank">Download JSON</a></div>`;
-  $("result-card").classList.remove("hidden");
-  $("go").disabled = false;
+  } catch (e) { /* transient network error: keep polling */ }
+  setTimeout(() => poll(id), 2000);
 }
 function fail(msg) {
   $("progress-card").classList.add("hidden");
-  $("result-card").innerHTML = `<strong>Something went wrong</strong><p class="err">${esc(msg)}</p>`;
-  $("result-card").classList.remove("hidden");
-  $("go").disabled = false;
+  $("results").innerHTML = `<div class="card"><strong>${t("wrong")}</strong><p class="err">${esc(msg)}</p></div>`;
+  $("results").classList.remove("hidden");
+  $("go").disabled = !chosen; $("sample").disabled = false;
 }
+
+function ring(score) {
+  const r = 46, c = 2 * Math.PI * r, v = Math.max(0, Math.min(100, score));
+  return `<svg class="ring" viewBox="0 0 110 110" role="img" aria-label="${Math.round(v)} / 100">
+    <circle cx="55" cy="55" r="${r}" fill="none" stroke="var(--soft)" stroke-width="10"/>
+    <circle cx="55" cy="55" r="${r}" fill="none" stroke="${tone(v, 65, 50)}" stroke-width="10" stroke-linecap="round"
+      stroke-dasharray="${c * v / 100} ${c}" transform="rotate(-90 55 55)"/>
+    <text x="55" y="62" text-anchor="middle" font-size="28">${Math.round(v)}</text></svg>`;
+}
+function bar(label, v, color) {
+  return `<div class="bar"><span>${label}</span><div class="track"><div class="fill" style="width:${Math.round(v * 100)}%;background:${color}"></div></div><span>${v.toFixed(2)}</span></div>`;
+}
+function scoreBadge(s, max = 10) {
+  if (s == null) return "";
+  const c = s / max >= .7 ? "var(--good)" : s / max >= .5 ? "var(--mid)" : "var(--bad)";
+  return `<span class="badge" style="background:${c}">${s}/${max}</span>`;
+}
+
+function renderResults(a, meta) {
+  const ev = a.evaluation || {}, v = a.voice_analysis || {}, it = v.interpretation || {}, cs = v.composite_scores || {};
+  const dir = (a.language === "ar") ? "rtl" : "ltr";
+  const L = s => `<span dir="${dir}">${esc(s)}</span>`;
+  let h = "";
+  h += `<div class="card"><div class="score-wrap">${ring(a.suitability_score)}
+        <div style="flex:1 1 240px"><div class="hint">${t("suitability")}</div>
+        <div class="verdict">${L(a.verdict)}</div>
+        <div class="chips">
+          ${ev.content_score != null ? `<span class="chip">${t("content")}: ${ev.content_score}/100</span>` : `<span class="chip">${t("provisional")}</span>`}
+          ${it.confidence_level ? `<span class="chip">${t("confidence")}: ${t(it.confidence_level)}</span>` : ""}
+          ${it.anxiety_level ? `<span class="chip">${t("anxiety")}: ${t(it.anxiety_level)}</span>` : ""}
+          ${it.fluency_level ? `<span class="chip">${t("fluency")}: ${t(it.fluency_level)}</span>` : ""}
+        </div></div></div>
+      <div class="downloads" style="margin-top:16px"><a class="primary" href="${meta.pdf_path.replace(/^\//, "")}" target="_blank" rel="noopener">${t("pdf")}</a>
+        <a href="${meta.json_path.replace(/^\//, "")}" target="_blank" rel="noopener">${t("json")}</a></div></div>`;
+
+  if ((ev.executive_summary || []).length)
+    h += `<div class="card"><h2>${t("summary")}</h2><ul class="list" dir="${dir}">${ev.executive_summary.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+
+  if (!v.error) {
+    const fl = Object.entries(v.filler_words || {}).slice(0, 4).map(([k, n]) => `"${k}" ×${n}`).join(", ");
+    h += `<div class="card"><h2>${t("voice")}</h2><div class="bars">
+        ${bar(t("confidence"), cs.confidence, "var(--good)")}${bar(t("anxiety"), cs.anxiety, "var(--bad)")}${bar(t("hesitation"), cs.hesitation, "var(--mid)")}</div>
+      <div class="metrics">
+        <div class="metric"><b>${v.speaking_rate}</b><span>${t("rate")} (${t("wps")})</span></div>
+        <div class="metric"><b>${(v.filler_ratio * 100).toFixed(1)}%</b><span>${t("fillers")}${fl ? " · " + esc(fl) : ""}</span></div>
+        <div class="metric"><b>${(v.speaking_time_seconds / 60).toFixed(1)} ${t("min")}</b><span>${t("talk")} · ${v.word_count} ${t("words")}</span></div>
+      </div>
+      ${ev.communication_tip ? `<div class="box plain" style="margin-top:12px" dir="${dir}">💡 ${esc(ev.communication_tip)}</div>` : ""}</div>`;
+  }
+
+  if ((a.qa_pairs || []).length) {
+    h += `<div class="card"><h2>${t("qa")}</h2>` + a.qa_pairs.map((q, i) => `
+      <details class="q" ${i === 0 ? "open" : ""}><summary>${scoreBadge(q.score) || `<span class="badge" style="background:var(--muted)">Q${q.index}</span>`}
+        <span class="en">${esc(q.question)}</span></summary>
+        <div class="qbody">
+          <div class="box plain"><h4>${t("answer")} · <a href="#" data-seek="${q.answer_start}">${fmtTime(q.answer_start)}</a></h4><div class="en">${esc(q.answer)}</div></div>
+          ${q.what_went_well ? `<div class="box good"><h4>${t("went_well")}</h4><div dir="${dir}">${esc(q.what_went_well)}</div></div>` : ""}
+          ${q.what_to_improve ? `<div class="box bad"><h4>${t("improve")}</h4><div dir="${dir}">${esc(q.what_to_improve)}</div></div>` : ""}
+          ${q.improved_answer ? `<div class="box plain"><h4>${t("better")}</h4><div class="en">${esc(q.improved_answer)}</div></div>` : ""}
+        </div></details>`).join("") + `</div>`;
+  }
+
+  if ((ev.strengths || []).length || (ev.weaknesses || []).length) {
+    h += `<div class="card two"><div><h2>${t("strengths")}</h2>${(ev.strengths || []).map(s => `<div class="box good" style="margin-bottom:8px" dir="${dir}">
+          <b>${esc(s.competency)}</b><div>${esc(s.explanation)}</div><div class="hint">${t("evidence")}: <span class="en">${esc(s.evidence)}</span></div></div>`).join("")}</div>
+      <div><h2>${t("weaknesses")}</h2>${(ev.weaknesses || []).map(w => `<div class="box bad" style="margin-bottom:8px" dir="${dir}"><b>${esc(w.area)}</b><div>${esc(w.feedback)}</div></div>`).join("")}</div></div>`;
+  }
+  if ((ev.recommendations || []).length)
+    h += `<div class="card"><h2>${t("recs")}</h2><ul class="list" dir="${dir}">${ev.recommendations.map(r => `<li><b>${esc(r.recommendation)}</b>: ${esc(r.how_to)}</li>`).join("")}</ul></div>`;
+
+  h += `<div class="card"><h2>${t("transcript")}</h2><div class="player"><audio id="player" controls preload="metadata" src="${esc(audioUrl || "")}"></audio>
+      <div class="hint">${t("tx_hint")}</div></div>
+      <div class="tx" id="tx">${(a.transcript || []).map((u, i) => `<div class="line" data-i="${i}" data-start="${u.start}" data-end="${u.end}">
+        <span class="t">${fmtTime(u.start)}</span><span class="r ${u.role}">${t(u.role)}</span><span class="en">${esc(u.text)}</span></div>`).join("")}</div></div>`;
+  h += `<div class="btns"><button class="btn ghost" onclick="window.scrollTo({top:0,behavior:'smooth'})">${t("again")}</button></div>`;
+  $("results").innerHTML = h;
+  $("results").classList.remove("hidden");
+  wirePlayer();
+}
+function wirePlayer() {
+  const p = $("player"); if (!p) return;
+  const lines = [...document.querySelectorAll("#tx .line")];
+  const seek = ms => { p.currentTime = ms / 1000; p.play().catch(() => {}); };
+  lines.forEach(l => l.onclick = () => seek(+l.dataset.start));
+  document.querySelectorAll("[data-seek]").forEach(a => a.onclick = e => { e.preventDefault(); seek(+a.dataset.seek); p.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  let cur = -1;
+  p.ontimeupdate = () => {
+    const ms = p.currentTime * 1000;
+    const i = lines.findIndex(l => ms >= +l.dataset.start && ms <= +l.dataset.end + 400);
+    if (i !== cur) {
+      if (cur >= 0) lines[cur].classList.remove("now");
+      cur = i;
+      if (i >= 0) { lines[i].classList.add("now"); const box = $("tx"); box.scrollTop = lines[i].offsetTop - box.offsetTop - 60; }
+    }
+  };
+}
+
+/* ---------------- Practice ---------------- */
+let bank = {}, queue = [], question = "", roleName = "", lastPractice = null, session = [];
+let recorder = null, chunks = [], recBlob = null, recState = "idle", tick = null, startedAt = 0;
+
+async function loadBank() {
+  try { bank = await (await fetch("practice/questions")).json(); } catch (e) { bank = { General: ["Tell me about yourself."] }; }
+  $("cat").innerHTML = Object.keys(bank).map(k => `<option>${esc(k)}</option>`).join("");
+  $("cat").onchange = () => { roleName = ""; setQueue(bank[$("cat").value]); };
+  setQueue(bank[$("cat").value]);
+}
+function setQueue(list) { queue = [...list].sort(() => Math.random() - .5); nextQuestion(); }
+function nextQuestion() {
+  if (!queue.length) queue = [...(bank[$("cat").value] || [])].sort(() => Math.random() - .5);
+  question = queue.shift() || "Tell me about yourself.";
+  $("qtext").textContent = question;
+  resetRecording();
+  $("presult").classList.add("hidden"); lastPractice = null;
+}
+$("nextq").onclick = nextQuestion;
+$("speak").onclick = () => {
+  if (!("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(question); u.lang = "en-US"; u.rate = .95;
+  const v = speechSynthesis.getVoices().find(v => v.lang && v.lang.startsWith("en"));
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+};
+$("gen").onclick = async () => {
+  const role = $("role").value.trim(); if (!role) { $("role").focus(); return; }
+  $("gen").disabled = true; $("pstatus").textContent = "…";
+  try {
+    const fd = new FormData(); fd.append("role", role);
+    const r = await fetch("practice/generate", { method: "POST", body: fd }), j = await r.json();
+    if (!r.ok) throw new Error(j.detail);
+    roleName = role; queue = j.questions; nextQuestion(); $("pstatus").textContent = "";
+  } catch (e) { $("pstatus").textContent = t("gen_fail"); }
+  $("gen").disabled = false;
+};
+
+function resetRecording() {
+  if (recorder && recorder.state === "recording") recorder.stop();
+  recBlob = null; recState = "idle"; $("recl").textContent = t("record"); $("timer").textContent = "";
+  $("myans").classList.add("hidden"); $("fb").disabled = true; $("pstatus").textContent = "";
+}
+$("recbtn").onclick = async () => {
+  if (recState === "recording") { recorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || "";
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    chunks = [];
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach(tr => tr.stop()); clearInterval(tick);
+      recBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      $("myans").src = URL.createObjectURL(recBlob); $("myans").classList.remove("hidden");
+      recState = "recorded"; $("recl").textContent = t("rerecord"); $("fb").disabled = false;
+    };
+    recorder.start(); recState = "recording"; startedAt = Date.now();
+    $("recl").textContent = t("stop"); $("fb").disabled = true; $("myans").classList.add("hidden");
+    tick = setInterval(() => {
+      const s = Math.floor((Date.now() - startedAt) / 1000);
+      $("timer").textContent = fmtTime(s * 1000);
+      if (s >= 180) recorder.stop();
+    }, 250);
+  } catch (e) { $("pstatus").textContent = t("mic_err"); }
+};
+$("fb").onclick = async () => {
+  if (!recBlob) return;
+  $("fb").disabled = true; $("pstatus").textContent = t("p_eval");
+  const ext = (recBlob.type.includes("mp4") ? "m4a" : recBlob.type.includes("ogg") ? "ogg" : "webm");
+  const fd = new FormData();
+  fd.append("file", recBlob, "answer." + ext); fd.append("question", question); fd.append("lang", lang); fd.append("role", roleName);
+  try {
+    const r = await fetch("practice", { method: "POST", body: fd }), j = await r.json();
+    if (!r.ok) throw new Error(j.detail);
+    lastPractice = j; renderPractice(j); $("pstatus").textContent = "";
+    session.push({ q: question, s: j.feedback.score }); renderSession();
+    $("presult").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { $("pstatus").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  $("fb").disabled = false;
+};
+function renderPractice(j) {
+  const f = j.feedback || {}, v = j.voice || {}, it = v.interpretation || {}, dir = j.lang === "ar" ? "rtl" : "ltr";
+  $("presult").innerHTML = `<div class="card">
+    <div class="score-wrap">${f.score != null ? ring(f.score * 10) : ""}
+      <div style="flex:1 1 240px"><div class="hint">${t("p_score")}${f.score != null ? `: ${f.score}/10` : ""}</div>
+      <div class="verdict" dir="${dir}">${esc(f.summary || "")}</div>
+      <div class="chips">${f.relevance ? `<span class="chip">${t("relevance")[f.relevance] || f.relevance}</span>` : ""}
+        ${v.speaking_rate != null ? `<span class="chip">${t("rate")}: ${v.speaking_rate} ${t("wps")}</span>` : ""}
+        ${v.filler_ratio != null ? `<span class="chip">${t("fillers")}: ${(v.filler_ratio * 100).toFixed(1)}%</span>` : ""}
+        ${it.confidence_level ? `<span class="chip">${t("confidence")}: ${t(it.confidence_level)}</span>` : ""}</div></div></div>
+    <div class="two" style="margin-top:14px">
+      <div class="box good"><h4>${t("went_well")}</h4><ul class="list" dir="${dir}">${(f.strengths || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>
+      <div class="box bad"><h4>${t("improve")}</h4><ul class="list" dir="${dir}">${(f.improvements || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>
+    </div>
+    ${f.delivery_tip ? `<div class="box plain" style="margin-top:12px" dir="${dir}">💡 <b>${t("tip")}:</b> ${esc(f.delivery_tip)}</div>` : ""}
+    ${f.improved_answer ? `<h3>${t("better")}</h3><div class="box plain en">${esc(f.improved_answer)}</div>` : ""}
+    <h3>${t("you_said")}</h3><div class="box plain en">${esc(j.transcript)}</div></div>`;
+  $("presult").classList.remove("hidden");
+}
+function renderSession() {
+  $("session-card").classList.remove("hidden");
+  $("session").innerHTML = session.map(x => `<li><span class="en">${esc(x.q)}</span>${scoreBadge(x.s)}</li>`).join("");
+}
+
+applyLang();
+loadBank();
+if ("speechSynthesis" in window) speechSynthesis.getVoices();
 </script>
 </body>
 </html>
