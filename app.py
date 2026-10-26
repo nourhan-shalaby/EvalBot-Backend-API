@@ -5,6 +5,7 @@ import os
 import time
 import glob
 import logging
+from typing import Optional
 from dotenv import load_dotenv
 
 # Imports for STT (Hugging Face Transformers)
@@ -13,9 +14,6 @@ import torch
 
 # Imports for TTS (Cartesia.ai)
 from cartesia import Cartesia
-
-# These specific imports from cartesia.tts are not strictly necessary for client.tts.bytes()
-# from cartesia.tts import OutputFormat_Wav, TtsRequestIdSpecifier
 
 # Configure logging
 logging.basicConfig(
@@ -117,7 +115,7 @@ def serve_static(filename):
     return send_from_directory('static', filename)
 
 
-def text_to_audio_cartesia(text: str, filename: str) -> str | None:
+def text_to_audio_cartesia(text: str, filename: str) -> Optional[str]:
     """
     Converts text to speech using Cartesia.ai and saves the audio to a local file.
 
@@ -175,7 +173,7 @@ def text_to_audio_cartesia(text: str, filename: str) -> str | None:
         return None
 
 
-def transcribe_audio_hf(audio_file_path: str) -> str | None:
+def transcribe_audio_hf(audio_file_path: str) -> Optional[str]:
     """
     Transcribes a local audio file to text using a Hugging Face STT model.
     """
@@ -278,6 +276,9 @@ def start_interview_api():
                     'questions': questions_with_audio_urls
                 }
             }), 200
+        else:
+            logger.error(f"Question API response has no 'topics' key: {api_data}")
+            return jsonify({'error': 'Unexpected response from the question generation service'}), 502
 
     except requests.exceptions.Timeout:
         logger.error("Timeout connecting to the question generation service.")
@@ -484,4 +485,6 @@ if __name__ == '__main__':
     os.makedirs('static/audio', exist_ok=True)
     os.makedirs('/tmp', exist_ok=True)
 
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    port = int(os.getenv('PORT', 5001))
+    debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host='0.0.0.0', port=port, debug=debug)

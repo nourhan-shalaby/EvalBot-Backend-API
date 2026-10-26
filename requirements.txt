@@ -1,13 +1,9 @@
 Flask
 requests
 python-dotenv
-pyttsx3 # Keep this for now, will remove its usage in app.py
+torch
 transformers==4.38.0
 accelerate==0.27.2
-# soundfile==0.12.1 # Remove or comment out if it's problematic, cartesia might return raw bytes
-# scipy # No longer needed if soundfile is removed, and not used by current HF STT setup
-# librosa # No longer needed if soundfile is removed, and not used by current HF STT setup
+cartesia
 gunicorn
 setuptools
-# pywin32==307; sys_platform == 'win32' # Keep if pyttsx3 is still in requirements.txt (which it is for now)
-cartesia # Add this line
