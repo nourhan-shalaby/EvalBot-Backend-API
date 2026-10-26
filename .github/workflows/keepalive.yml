@@ -1,0 +1,23 @@
+# Pings the live EvalBot Space every 6 hours. The /health endpoint runs a real database query,
+# so this keeps both the free Hugging Face Space (sleeps after 48 h idle) and the free
+# Supabase project (pauses after 7 days idle) awake.
+name: Keep EvalBot awake
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          for i in 1 2 3 4 5; do
+            if out=$(curl -fsS --max-time 60 https://evalbot-audio-evalbot.hf.space/health); then
+              echo "$out"; exit 0
+            fi
+            echo "Attempt $i failed, the Space may be waking up; retrying in 60 s"; sleep 60
+          done
+          exit 1

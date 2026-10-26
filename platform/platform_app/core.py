@@ -145,7 +145,32 @@ def _use_supabase_storage() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
 
+# Optional: keep recordings and PDFs in a private Hugging Face dataset (100 GB+ free) instead of
+# Supabase Storage (1 GB free). Enabled when HF_STORAGE_REPO and HF_TOKEN are both set.
+HF_STORAGE_REPO = os.getenv("HF_STORAGE_REPO", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+_hf_cache_dir = os.path.join(LOCAL_STORAGE_DIR, ".hf_cache")
+
+
+def _use_hf_storage() -> bool:
+    return bool(HF_STORAGE_REPO and HF_TOKEN)
+
+
+def storage_backend() -> str:
+    return "huggingface" if _use_hf_storage() else "supabase" if _use_supabase_storage() else "local"
+
+
+def _hf_api():
+    from huggingface_hub import HfApi
+    return HfApi(token=HF_TOKEN)
+
+
 def ensure_bucket() -> None:
+    if _use_hf_storage():
+        _hf_api().create_repo(HF_STORAGE_REPO, repo_type="dataset", private=True, exist_ok=True)
+        os.makedirs(_hf_cache_dir, exist_ok=True)
+        logger.info("File storage: private HF dataset %s", HF_STORAGE_REPO)
+        return
     if not _use_supabase_storage():
         os.makedirs(LOCAL_STORAGE_DIR, exist_ok=True)
         return
@@ -157,6 +182,14 @@ def ensure_bucket() -> None:
 
 
 def put_file(path: str, data: bytes, content_type: str) -> str:
+    if _use_hf_storage():
+        _hf_api().upload_file(path_or_fileobj=data, path_in_repo=path, repo_id=HF_STORAGE_REPO,
+                              repo_type="dataset", commit_message=f"add {path}")
+        full = os.path.join(_hf_cache_dir, path)  # keep a local copy so reads are instant
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as f:
+            f.write(data)
+        return path
     if not _use_supabase_storage():
         full = os.path.join(LOCAL_STORAGE_DIR, path)
         os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -171,6 +204,17 @@ def put_file(path: str, data: bytes, content_type: str) -> str:
 
 
 def get_file(path: str) -> bytes:
+    if _use_hf_storage():
+        full = os.path.join(_hf_cache_dir, path)
+        if not os.path.exists(full):
+            from huggingface_hub import hf_hub_download
+            try:
+                return open(hf_hub_download(HF_STORAGE_REPO, path, repo_type="dataset", token=HF_TOKEN,
+                                            local_dir=_hf_cache_dir), "rb").read()
+            except Exception as e:
+                raise RuntimeError(f"Storage download failed: {e}")
+        with open(full, "rb") as f:
+            return f.read()
     if not _use_supabase_storage():
         with open(os.path.join(LOCAL_STORAGE_DIR, path), "rb") as f:
             return f.read()

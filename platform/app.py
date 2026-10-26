@@ -152,7 +152,14 @@ def _run(local_path: str, user_id: str, progress=None, lang: str = "en") -> Dict
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "services": pipeline.validate_env_vars()}
+    core = platform_core
+    platform = {"database": False, "storage": core.storage_backend()}
+    if core.enabled():
+        try:  # a real query, so the scheduled ping also keeps the free Supabase project active
+            platform["database"] = core.q1("select 1 as ok")["ok"] == 1
+        except Exception as e:
+            platform["database_error"] = type(e).__name__
+    return {"status": "ok", "services": pipeline.validate_env_vars(), "platform": platform}
 
 
 @app.post("/process-audio", response_model=ProcessResponse)

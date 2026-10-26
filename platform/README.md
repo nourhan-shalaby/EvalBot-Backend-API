@@ -1,6 +1,15 @@
-# EvalBot platform
+---
+title: EvalBot - AI Interview Practice and Hiring
+emoji: 🎤
+colorFrom: green
+colorTo: yellow
+sdk: docker
+app_port: 7860
+pinned: true
+short_description: AI mock interviews and hiring for every career track
+---
 
-Live: [huggingface.co/spaces/EvalBot/Audio-EvalBot](https://huggingface.co/spaces/EvalBot/Audio-EvalBot)
+# EvalBot
 
 **Practice the interview before the interview.** EvalBot runs spoken mock interviews for 30 career tracks, listens to how you answer, and tells you exactly what to fix. Companies use the same engine to run one-link hiring interviews and get a ranked shortlist with reasons.
 
@@ -68,7 +77,7 @@ FastAPI (this Space, Docker)
   │                ReportLab PDF (English / right-to-left Arabic)
   └─ /demo         standalone analyzer for a full recorded interview + single-question practice
         │
-Supabase Postgres (data) + Supabase Storage (recordings, PDFs)
+Supabase Postgres (data) + Supabase Storage or a private HF dataset (recordings, PDFs)
 ```
 
 ### Configuration (Space secrets)
@@ -81,6 +90,8 @@ Supabase Postgres (data) + Supabase Storage (recordings, PDFs)
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Authentication (public values) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-side storage access |
 | `PINECONE_API_KEY` | Optional; a built-in vector index is used otherwise |
+
+Large file storage (optional): set the variable `HF_STORAGE_REPO` (a private dataset, e.g. `EvalBot/evalbot-storage`) and the secret `HF_TOKEN` (a fine-grained token with write access to that dataset) to keep recordings and PDFs on Hugging Face instead of Supabase Storage. `/health` reports the active storage backend and database status; a scheduled ping to it keeps the Space and the free Supabase project awake.
 
 Optional: `GEMINI_MODEL` (default `gemini-3.5-flash-lite`, with automatic fallback to other Flash models), `STORAGE_BUCKET`.
 
